@@ -13,8 +13,13 @@ import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../auto-reply/reply/provider-dispatcher.js";
 import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../channels/command-gating.js";
+import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { createReplyPrefixOptions } from "../channels/reply-prefix.js";
-import type { OpenClawConfig } from "../config/config.js";
+import {
+  readConfigFileSnapshotForWrite,
+  type OpenClawConfig,
+  writeConfigFile,
+} from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { recordSessionMetaFromInbound, resolveStorePath } from "../config/sessions.js";
@@ -39,7 +44,7 @@ import {
   matchPluginCommand,
 } from "../plugins/commands.js";
 import { resolveAgentRoute } from "../routing/resolve-route.js";
-import { resolveThreadSessionKeys } from "../routing/session-key.js";
+import { normalizeAccountId, resolveThreadSessionKeys } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { isSenderAllowed, normalizeDmAllowFromWithStore } from "./bot-access.js";
@@ -73,14 +78,161 @@ import {
 import { buildInlineKeyboard } from "./send.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
+const TELEGRAM_TOPIC_COMMAND = {
+  command: "topic",
+  description: "Map this topic to a named session.",
+};
+
+const TOPIC_NAME_INVALID_CHARS_RE = /[^a-z0-9_-]+/gi;
+const TOPIC_NAME_DASH_RUN_RE = /-{2,}/g;
+const TOPIC_NAME_TRIM_EDGE_RE = /^[-_]+|[-_]+$/g;
 
 type TelegramNativeCommandContext = Context & { match?: string };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function resolveTelegramTopicWriteScope(params: { cfg: OpenClawConfig; accountId: string }):
+  | { scope: "global" }
+  | {
+      scope: "account";
+      accountKey: string;
+    } {
+  const accounts = asRecord(params.cfg.channels?.telegram?.accounts);
+  const normalizedAccountId = normalizeAccountId(params.accountId);
+
+  if (accounts) {
+    const existingAccountKey = Object.keys(accounts).find(
+      (key) => normalizeAccountId(key) === normalizedAccountId,
+    );
+    if (existingAccountKey) {
+      return { scope: "account", accountKey: existingAccountKey };
+    }
+  }
+
+  if (normalizedAccountId !== "default") {
+    return { scope: "account", accountKey: params.accountId };
+  }
+
+  return { scope: "global" };
+}
+
+function normalizeTelegramTopicNameAlias(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(TOPIC_NAME_INVALID_CHARS_RE, "-")
+    .replace(TOPIC_NAME_DASH_RUN_RE, "-")
+    .replace(TOPIC_NAME_TRIM_EDGE_RE, "")
+    .slice(0, 80);
+}
+
+function updateTelegramDirectTopicSessionKeyConfig(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  chatId: string;
+  threadId: number;
+  sessionKey?: string;
+}): { changed: boolean; configPath: string } {
+  params.cfg.channels ??= {};
+  params.cfg.channels.telegram ??= {};
+
+  const topicKey = String(params.threadId);
+  const writeScope = resolveTelegramTopicWriteScope({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  });
+
+  let direct: Record<string, TelegramDirectConfig> | undefined;
+  let configPathPrefix: string;
+
+  if (writeScope.scope === "account") {
+    const telegram = params.cfg.channels.telegram;
+    const accountConfig = telegram.accounts?.[writeScope.accountKey];
+    if (params.sessionKey) {
+      telegram.accounts ??= {};
+      telegram.accounts[writeScope.accountKey] ??= {};
+      telegram.accounts[writeScope.accountKey].direct ??= {};
+      direct = telegram.accounts[writeScope.accountKey].direct as Record<
+        string,
+        TelegramDirectConfig
+      >;
+    } else {
+      direct = accountConfig?.direct;
+    }
+    configPathPrefix = `channels.telegram.accounts."${writeScope.accountKey}".direct."${params.chatId}"`;
+  } else {
+    const telegram = params.cfg.channels.telegram;
+    if (params.sessionKey) {
+      telegram.direct ??= {};
+      direct = telegram.direct;
+    } else {
+      direct = telegram.direct;
+    }
+    configPathPrefix = `channels.telegram.direct."${params.chatId}"`;
+  }
+
+  const configPath = `${configPathPrefix}.topics."${topicKey}".sessionKey`;
+  if (!direct) {
+    return { changed: false, configPath };
+  }
+
+  let changed = false;
+
+  const existingDirectConfig = asRecord(direct[params.chatId]);
+  const directConfig = (existingDirectConfig ?? {}) as TelegramDirectConfig;
+  if (!existingDirectConfig) {
+    if (!params.sessionKey) {
+      return { changed: false, configPath };
+    }
+    direct[params.chatId] = directConfig;
+    changed = true;
+  }
+
+  if (!directConfig.topics || typeof directConfig.topics !== "object") {
+    if (!params.sessionKey) {
+      return { changed, configPath };
+    }
+    directConfig.topics = {};
+    changed = true;
+  }
+
+  const existingTopic = asRecord(directConfig.topics[topicKey]);
+  const topicConfig = (existingTopic ?? {}) as TelegramTopicConfig;
+  if (!existingTopic) {
+    if (!params.sessionKey) {
+      return { changed, configPath };
+    }
+    directConfig.topics[topicKey] = topicConfig;
+    changed = true;
+  }
+
+  if (params.sessionKey) {
+    if (topicConfig.sessionKey !== params.sessionKey) {
+      topicConfig.sessionKey = params.sessionKey;
+      changed = true;
+    }
+  } else if ("sessionKey" in topicConfig) {
+    delete topicConfig.sessionKey;
+    changed = true;
+  }
+
+  return {
+    changed,
+    configPath,
+  };
+}
 
 type TelegramCommandAuthResult = {
   chatId: number;
   isGroup: boolean;
   isForum: boolean;
   resolvedThreadId?: number;
+  dmThreadId?: number;
   senderId: string;
   senderUsername: string;
   groupConfig?: TelegramGroupConfig;
@@ -296,6 +448,7 @@ async function resolveTelegramCommandAuth(params: {
     isGroup,
     isForum,
     resolvedThreadId,
+    dmThreadId,
     senderId,
     senderUsername,
     groupConfig,
@@ -359,6 +512,11 @@ export const registerTelegramNativeCommands = ({
       ...customCommands.map((command) => command.command),
     ].map((command) => command.toLowerCase()),
   );
+  const canRegisterTopicCommand =
+    nativeEnabled && !existingCommands.has(TELEGRAM_TOPIC_COMMAND.command);
+  if (canRegisterTopicCommand) {
+    existingCommands.add(TELEGRAM_TOPIC_COMMAND.command);
+  }
   const pluginCatalog = buildPluginTelegramMenuCommands({
     specs: pluginCommandSpecs,
     existingCommands,
@@ -384,6 +542,7 @@ export const registerTelegramNativeCommands = ({
         };
       })
       .filter((cmd): cmd is { command: string; description: string } => cmd !== null),
+    ...(canRegisterTopicCommand ? [TELEGRAM_TOPIC_COMMAND] : []),
     ...(nativeEnabled ? pluginCatalog.commands : []),
     ...customCommands,
   ];
@@ -460,6 +619,142 @@ export const registerTelegramNativeCommands = ({
     if (typeof (bot as unknown as { command?: unknown }).command !== "function") {
       logVerbose("telegram: bot.command unavailable; skipping native handlers");
     } else {
+      if (canRegisterTopicCommand) {
+        bot.command(TELEGRAM_TOPIC_COMMAND.command, async (ctx: TelegramNativeCommandContext) => {
+          const msg = ctx.message;
+          if (!msg) {
+            return;
+          }
+          if (shouldSkipUpdate(ctx)) {
+            return;
+          }
+
+          const auth = await resolveTelegramCommandAuth({
+            msg,
+            bot,
+            cfg,
+            accountId,
+            telegramCfg,
+            allowFrom,
+            groupAllowFrom,
+            useAccessGroups,
+            resolveGroupPolicy,
+            resolveTelegramGroupConfig,
+            requireAuth: true,
+          });
+          if (!auth) {
+            return;
+          }
+
+          const { chatId, isGroup, isForum, resolvedThreadId, dmThreadId } = auth;
+          if (isGroup || isForum) {
+            await withTelegramApiErrorLogging({
+              operation: "sendMessage",
+              runtime,
+              fn: () =>
+                bot.api.sendMessage(
+                  chatId,
+                  "This command works in DM topics. Open the target topic and run /topic <name>.",
+                ),
+            });
+            return;
+          }
+
+          if (dmThreadId == null) {
+            await withTelegramApiErrorLogging({
+              operation: "sendMessage",
+              runtime,
+              fn: () =>
+                bot.api.sendMessage(
+                  chatId,
+                  "No active DM topic found. Run this command inside the topic you want to map.",
+                ),
+            });
+            return;
+          }
+
+          const { route } = resolveCommandRuntimeContext({
+            msg,
+            isGroup,
+            isForum,
+            resolvedThreadId,
+          });
+          const defaultSessionKey = resolveThreadSessionKeys({
+            baseSessionKey: route.sessionKey,
+            threadId: `${chatId}:${dmThreadId}`,
+          }).sessionKey;
+
+          const rawTopicName = ctx.match ?? "";
+          const topicName = rawTopicName.trim();
+          const clearMapping = !topicName;
+
+          let mappedSessionKey: string | undefined;
+          if (!clearMapping) {
+            const topicAlias = normalizeTelegramTopicNameAlias(topicName);
+            if (!topicAlias) {
+              await withTelegramApiErrorLogging({
+                operation: "sendMessage",
+                runtime,
+                fn: () =>
+                  bot.api.sendMessage(chatId, "Topic name must include letters or numbers."),
+              });
+              return;
+            }
+            mappedSessionKey = resolveThreadSessionKeys({
+              baseSessionKey: route.sessionKey,
+              threadId: `${chatId}:${topicAlias}`,
+            }).sessionKey;
+          }
+
+          const { snapshot, writeOptions } = await readConfigFileSnapshotForWrite();
+          const configSnapshot = structuredClone(snapshot.config ?? {});
+          if (
+            !resolveChannelConfigWrites({ cfg: configSnapshot, channelId: "telegram", accountId })
+          ) {
+            await withTelegramApiErrorLogging({
+              operation: "sendMessage",
+              runtime,
+              fn: () =>
+                bot.api.sendMessage(
+                  chatId,
+                  "Config writes are disabled for this Telegram account.",
+                ),
+            });
+            return;
+          }
+
+          const writeResult = updateTelegramDirectTopicSessionKeyConfig({
+            cfg: configSnapshot,
+            accountId,
+            chatId: String(chatId),
+            threadId: dmThreadId,
+            sessionKey: mappedSessionKey,
+          });
+
+          if (writeResult.changed) {
+            await writeConfigFile(configSnapshot, writeOptions);
+          }
+
+          const statusMessage = clearMapping
+            ? writeResult.changed
+              ? `Cleared topic mapping. Using default session key ${defaultSessionKey}.`
+              : `Topic already uses default session key ${defaultSessionKey}.`
+            : writeResult.changed
+              ? `Mapped topic "${topicName}" to session ${mappedSessionKey}.`
+              : `Topic already maps to session ${mappedSessionKey}.`;
+
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            runtime,
+            fn: () =>
+              bot.api.sendMessage(
+                chatId,
+                `${statusMessage} Config path: ${writeResult.configPath}.`,
+              ),
+          });
+        });
+      }
+
       for (const command of nativeCommands) {
         const normalizedCommandName = normalizeTelegramCommandName(command.name);
         bot.command(normalizedCommandName, async (ctx: TelegramNativeCommandContext) => {

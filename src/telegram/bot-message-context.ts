@@ -66,7 +66,10 @@ import {
 import type { StickerMetadata, TelegramContext } from "./bot/types.js";
 import { enforceTelegramDmAccess } from "./dm-access.js";
 import { evaluateTelegramGroupBaseAccess } from "./group-access.js";
-import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
+import {
+  resolveTelegramGroupPromptSettings,
+  resolveTelegramTopicSessionKey,
+} from "./group-config-helpers.js";
 import {
   buildTelegramStatusReactionVariants,
   resolveTelegramAllowedEmojiReactions,
@@ -215,12 +218,17 @@ export const buildTelegramMessageContext = async ({
     return null;
   }
   const baseSessionKey = route.sessionKey;
-  // DMs: use thread suffix for session isolation (works regardless of dmScope)
+  const topicSessionKey = resolveTelegramTopicSessionKey({
+    isGroup,
+    topicConfig,
+    baseSessionKey,
+  });
+  // DMs: use thread suffix for session isolation unless a topic config overrides the session key.
   const threadKeys =
-    dmThreadId != null
+    dmThreadId != null && topicSessionKey === baseSessionKey
       ? resolveThreadSessionKeys({ baseSessionKey, threadId: `${chatId}:${dmThreadId}` })
       : null;
-  const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+  const sessionKey = threadKeys?.sessionKey ?? topicSessionKey;
   const mentionRegexes = buildMentionRegexes(cfg, route.agentId);
   // Calculate groupAllowOverride first - it's needed for both DM and group allowlist checks
   const groupAllowOverride = firstDefined(topicConfig?.allowFrom, groupConfig?.allowFrom);

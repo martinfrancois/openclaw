@@ -20,6 +20,9 @@ export function createNativeCommandTestParams(params: {
   nativeSkillsEnabled?: boolean;
   nativeDisabledExplicit?: boolean;
   opts?: RegisterTelegramNativeCommandParams["opts"];
+  resolveGroupPolicy?: RegisterTelegramNativeCommandParams["resolveGroupPolicy"];
+  resolveTelegramGroupConfig?: RegisterTelegramNativeCommandParams["resolveTelegramGroupConfig"];
+  shouldSkipUpdate?: RegisterTelegramNativeCommandParams["shouldSkipUpdate"];
 }): RegisterTelegramNativeCommandParams {
   return {
     bot: params.bot,
@@ -35,12 +38,15 @@ export function createNativeCommandTestParams(params: {
     nativeEnabled: params.nativeEnabled ?? true,
     nativeSkillsEnabled: params.nativeSkillsEnabled ?? true,
     nativeDisabledExplicit: params.nativeDisabledExplicit ?? false,
-    resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
-    resolveTelegramGroupConfig: () => ({
-      groupConfig: undefined,
-      topicConfig: undefined,
-    }),
-    shouldSkipUpdate: () => false,
+    resolveGroupPolicy:
+      params.resolveGroupPolicy ?? (() => ({ allowlistEnabled: false, allowed: true })),
+    resolveTelegramGroupConfig:
+      params.resolveTelegramGroupConfig ??
+      (() => ({
+        groupConfig: undefined,
+        topicConfig: undefined,
+      })),
+    shouldSkipUpdate: params.shouldSkipUpdate ?? (() => false),
     opts: params.opts ?? { token: "token" },
   };
 }

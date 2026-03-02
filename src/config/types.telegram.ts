@@ -185,6 +185,8 @@ export type TelegramTopicConfig = {
   allowFrom?: Array<string | number>;
   /** Optional system prompt snippet for this topic. */
   systemPrompt?: string;
+  /** Optional fixed session key override (primarily for DM topics). */
+  sessionKey?: string;
 };
 
 export type TelegramGroupConfig = {

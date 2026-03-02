@@ -22,6 +22,34 @@ describe("buildTelegramMessageContext dm thread sessions", () => {
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main:thread:1234:42");
   });
 
+  it("uses configured topic sessionKey override for dm topics", async () => {
+    const ctx = await buildTelegramMessageContextForTest({
+      message: {
+        message_id: 9,
+        chat: { id: 1234, type: "private" },
+        date: 1700000009,
+        text: "hello",
+        message_thread_id: 42,
+        from: { id: 42, first_name: "Alice" },
+      },
+      resolveTelegramGroupConfig: (_chatId, messageThreadId) => ({
+        groupConfig: {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+            },
+          },
+        },
+        topicConfig: messageThreadId != null ? { sessionKey: "agent:ops:main" } : undefined,
+      }),
+    });
+
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.MessageThreadId).toBe(42);
+    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:ops:main");
+  });
+
   it("keeps legacy dm session key when no thread id", async () => {
     const ctx = await buildContext({
       message_id: 2,

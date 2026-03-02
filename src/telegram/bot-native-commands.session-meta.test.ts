@@ -52,7 +52,7 @@ function createDeferred<T>() {
 
 type TelegramCommandHandler = (ctx: unknown) => Promise<void>;
 
-function buildStatusCommandContext() {
+function buildStatusCommandContext(params?: { messageThreadId?: number }) {
   return {
     match: "",
     message: {
@@ -60,11 +60,19 @@ function buildStatusCommandContext() {
       date: Math.floor(Date.now() / 1000),
       chat: { id: 100, type: "private" as const },
       from: { id: 200, username: "bob" },
+      message_thread_id: params?.messageThreadId,
     },
   };
 }
 
-function registerAndResolveStatusHandler(cfg: OpenClawConfig): TelegramCommandHandler {
+function registerAndResolveStatusHandler(
+  cfg: OpenClawConfig,
+  overrides?: {
+    resolveTelegramGroupConfig?: Parameters<
+      typeof createNativeCommandTestParams
+    >[0]["resolveTelegramGroupConfig"];
+  },
+): TelegramCommandHandler {
   const commandHandlers = new Map<string, TelegramCommandHandler>();
   registerTelegramNativeCommands({
     ...createNativeCommandTestParams({
@@ -79,6 +87,7 @@ function registerAndResolveStatusHandler(cfg: OpenClawConfig): TelegramCommandHa
       } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
       cfg,
       allowFrom: ["*"],
+      resolveTelegramGroupConfig: overrides?.resolveTelegramGroupConfig,
     }),
   });
 
@@ -108,6 +117,33 @@ describe("registerTelegramNativeCommands — session metadata", () => {
     expect(call?.ctx?.OriginatingChannel).toBe("telegram");
     expect(call?.ctx?.Provider).toBe("telegram");
     expect(call?.sessionKey).toBeDefined();
+  });
+
+  it("routes dm topic commands to configured topic sessionKey", async () => {
+    const cfg: OpenClawConfig = {};
+    const handler = registerAndResolveStatusHandler(cfg, {
+      resolveTelegramGroupConfig: (_chatId, messageThreadId) => ({
+        groupConfig: {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+            },
+          },
+        },
+        topicConfig: messageThreadId != null ? { sessionKey: "agent:ops:main" } : undefined,
+      }),
+    });
+
+    await handler(buildStatusCommandContext({ messageThreadId: 42 }));
+
+    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    const call = (
+      replyMocks.dispatchReplyWithBufferedBlockDispatcher.mock.calls as unknown as Array<
+        [{ ctx?: { CommandTargetSessionKey?: string } }]
+      >
+    )[0]?.[0];
+    expect(call?.ctx?.CommandTargetSessionKey).toBe("agent:ops:main");
   });
 
   it("awaits session metadata persistence before dispatch", async () => {

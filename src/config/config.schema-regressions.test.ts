@@ -23,6 +23,56 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it.each([
+    { label: "agent session key", sessionKey: "agent:ops:main" },
+    { label: "legacy alias", sessionKey: "ops-main" },
+  ])("accepts telegram direct topic sessionKey overrides (${label})", ({ sessionKey }) => {
+    const res = validateConfigObject({
+      channels: {
+        telegram: {
+          direct: {
+            "123456789": {
+              topics: {
+                "42": {
+                  sessionKey,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it.each([
+    { label: "whitespace", sessionKey: "agent:ops:main thread" },
+    { label: "malformed agent prefix", sessionKey: "agent:" },
+    { label: "empty string", sessionKey: "" },
+  ])("rejects invalid telegram direct topic sessionKey (${label})", ({ sessionKey }) => {
+    const res = validateConfigObject({
+      channels: {
+        telegram: {
+          direct: {
+            "123456789": {
+              topics: {
+                "42": {
+                  sessionKey,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues.some((issue) => issue.path.includes("topics.42.sessionKey"))).toBe(true);
+    }
+  });
+
   it('accepts memorySearch fallback "voyage"', () => {
     const res = validateConfigObject({
       agents: {

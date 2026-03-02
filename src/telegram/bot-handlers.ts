@@ -55,6 +55,7 @@ import {
   evaluateTelegramGroupBaseAccess,
   evaluateTelegramGroupPolicyAccess,
 } from "./group-access.js";
+import { resolveTelegramTopicSessionKey } from "./group-config-helpers.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
 import {
@@ -292,11 +293,18 @@ export const registerTelegramHandlers = ({
     });
     const baseSessionKey = route.sessionKey;
     const dmThreadId = !params.isGroup ? params.messageThreadId : undefined;
+    const threadIdForConfig = resolvedThreadId ?? dmThreadId;
+    const { topicConfig } = resolveTelegramGroupConfig(params.chatId, threadIdForConfig);
+    const topicSessionKey = resolveTelegramTopicSessionKey({
+      isGroup: params.isGroup,
+      topicConfig,
+      baseSessionKey,
+    });
     const threadKeys =
-      dmThreadId != null
+      dmThreadId != null && topicSessionKey === baseSessionKey
         ? resolveThreadSessionKeys({ baseSessionKey, threadId: `${params.chatId}:${dmThreadId}` })
         : null;
-    const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+    const sessionKey = threadKeys?.sessionKey ?? topicSessionKey;
     const storePath = resolveStorePath(cfg.session?.store, { agentId: route.agentId });
     const store = loadSessionStore(storePath);
     const entry = store[sessionKey];

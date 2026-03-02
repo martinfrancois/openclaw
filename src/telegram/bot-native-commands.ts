@@ -66,7 +66,10 @@ import {
   evaluateTelegramGroupBaseAccess,
   evaluateTelegramGroupPolicyAccess,
 } from "./group-access.js";
-import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
+import {
+  resolveTelegramGroupPromptSettings,
+  resolveTelegramTopicSessionKey,
+} from "./group-config-helpers.js";
 import { buildInlineKeyboard } from "./send.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
@@ -561,16 +564,22 @@ export const registerTelegramNativeCommands = ({
             return;
           }
           const baseSessionKey = route.sessionKey;
+          const topicSessionKey = resolveTelegramTopicSessionKey({
+            isGroup,
+            topicConfig,
+            baseSessionKey,
+          });
           // DMs: use raw messageThreadId for thread sessions (not resolvedThreadId which is for forums)
+          // unless a DM topic explicitly overrides sessionKey in config.
           const dmThreadId = threadSpec.scope === "dm" ? threadSpec.id : undefined;
           const threadKeys =
-            dmThreadId != null
+            dmThreadId != null && topicSessionKey === baseSessionKey
               ? resolveThreadSessionKeys({
                   baseSessionKey,
                   threadId: `${chatId}:${dmThreadId}`,
                 })
               : null;
-          const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+          const sessionKey = threadKeys?.sessionKey ?? topicSessionKey;
           const { skillFilter, groupSystemPrompt } = resolveTelegramGroupPromptSettings({
             groupConfig,
             topicConfig,

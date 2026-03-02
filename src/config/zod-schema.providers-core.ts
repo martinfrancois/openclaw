@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isSafeScpRemoteHost } from "../infra/scp-host.js";
 import { isValidInboundPathRootPattern } from "../media/inbound-path-policy.js";
+import { classifySessionKeyShape } from "../routing/session-key.js";
 import {
   resolveDiscordPreviewStreamMode,
   resolveSlackNativeStreaming,
@@ -54,6 +55,23 @@ const TelegramCapabilitiesSchema = z.union([
     .strict(),
 ]);
 
+const TelegramTopicSessionKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => /^\S+$/.test(value), {
+    message: "sessionKey must not contain whitespace",
+  })
+  .refine(
+    (value) => {
+      const shape = classifySessionKeyShape(value);
+      return shape === "agent" || shape === "legacy_or_alias";
+    },
+    {
+      message: "sessionKey must be a valid agent session key (agent:<id>:...) or a non-empty alias",
+    },
+  );
+
 export const TelegramTopicSchema = z
   .object({
     requireMention: z.boolean().optional(),
@@ -62,6 +80,7 @@ export const TelegramTopicSchema = z
     enabled: z.boolean().optional(),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     systemPrompt: z.string().optional(),
+    sessionKey: TelegramTopicSessionKeySchema.optional(),
   })
   .strict();
 

@@ -173,6 +173,20 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
           },
         },
       },
+      direct: {
+        "*": {
+          dmPolicy: "pairing",
+        },
+        "123456789": {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+              systemPrompt: "Handle ops-only requests.",
+            },
+          },
+        },
+      },
       customCommands: [
         { command: "backup", description: "Git backup" },
         { command: "generate", description: "Create an image" },
@@ -206,6 +220,13 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
 - Bot token: `channels.telegram.botToken` or `channels.telegram.tokenFile`, with `TELEGRAM_BOT_TOKEN` as fallback for the default account.
 - Optional `channels.telegram.defaultAccount` overrides default account selection when it matches a configured account id.
 - `configWrites: false` blocks Telegram-initiated config writes (supergroup ID migrations, `/config set|unset`).
+- `channels.telegram.direct` config enables per-DM defaults and per-DM-topic overrides (`dmPolicy`, `allowFrom`, `requireTopic`, `topics`).
+- `channels.telegram.direct.<chatId|*>.topics.<threadId>.sessionKey` pins a DM topic to a fixed session alias (instead of the default thread-suffixed session key).
+- Topic-level overrides can include access/prompt fields (`allowFrom`, `skills`, `systemPrompt`, `enabled`, `groupPolicy`) and now `sessionKey` for DM topics.
+- CLI path syntax for numeric keys must be quoted, for example:
+  - `openclaw config set 'channels.telegram.direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
+  - `openclaw config set 'channels.telegram.accounts."work".direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
+- Native `/topic <name>` command maps the current DM topic to a named session key override (`channels.telegram.direct.<chatId>.topics.<threadId>.sessionKey`); `/topic` with empty/whitespace input clears that override.
 - Telegram stream previews use `sendMessage` + `editMessageText` (works in direct and group chats).
 - Retry policy: see [Retry policy](/concepts/retry).
 

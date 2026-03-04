@@ -19,6 +19,13 @@ const pluginCommandMocks = vi.hoisted(() => ({
 const deliveryMocks = vi.hoisted(() => ({
   deliverReplies: vi.fn(async () => ({ delivered: true })),
 }));
+const configMocks = vi.hoisted(() => ({
+  readConfigFileSnapshotForWrite: vi.fn(async () => ({
+    snapshot: { config: {} },
+    writeOptions: {},
+  })),
+  writeConfigFile: vi.fn(async () => undefined),
+}));
 
 vi.mock("../auto-reply/skill-commands.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../auto-reply/skill-commands.js")>();
@@ -35,6 +42,14 @@ vi.mock("../plugins/commands.js", () => ({
 vi.mock("./bot/delivery.js", () => ({
   deliverReplies: deliveryMocks.deliverReplies,
 }));
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
+  return {
+    ...actual,
+    readConfigFileSnapshotForWrite: configMocks.readConfigFileSnapshotForWrite,
+    writeConfigFile: configMocks.writeConfigFile,
+  };
+});
 
 describe("registerTelegramNativeCommands", () => {
   type RegisteredCommand = {
@@ -62,6 +77,13 @@ describe("registerTelegramNativeCommands", () => {
     pluginCommandMocks.executePluginCommand.mockResolvedValue({ text: "ok" });
     deliveryMocks.deliverReplies.mockClear();
     deliveryMocks.deliverReplies.mockResolvedValue({ delivered: true });
+    configMocks.readConfigFileSnapshotForWrite.mockClear();
+    configMocks.readConfigFileSnapshotForWrite.mockResolvedValue({
+      snapshot: { config: {} },
+      writeOptions: {},
+    });
+    configMocks.writeConfigFile.mockClear();
+    configMocks.writeConfigFile.mockResolvedValue(undefined);
   });
 
   const buildParams = (cfg: OpenClawConfig, accountId = "default") =>
@@ -147,6 +169,61 @@ describe("registerTelegramNativeCommands", () => {
     expect(runtimeLog).toHaveBeenCalledWith(
       "Telegram limits bots to 100 commands. 120 configured; registering first 100. Use channels.telegram.commands.native: false to disable, or reduce plugin/skill/custom commands.",
     );
+  });
+
+  it("registers /topic when native commands are disabled and no custom/plugin commands exist", async () => {
+    const setMyCommands = vi.fn().mockResolvedValue(undefined);
+
+    registerTelegramNativeCommands({
+      ...buildParams({}, "work"),
+      bot: {
+        api: {
+          setMyCommands,
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn(),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+      telegramCfg: {},
+      nativeEnabled: false,
+      nativeSkillsEnabled: false,
+    });
+
+    const registeredCommands = await waitForRegisteredCommands(setMyCommands);
+    expect(registeredCommands).toHaveLength(1);
+    expect(registeredCommands).toEqual([
+      {
+        command: "topic",
+        description: "Map this topic to a named session.",
+      },
+    ]);
+  });
+
+  it("keeps /topic in Telegram autocompletion under command list truncation", async () => {
+    const customCommands = Array.from({ length: 120 }, (_, index) => ({
+      command: `cmd_${index}`,
+      description: `Command ${index}`,
+    }));
+    const setMyCommands = vi.fn().mockResolvedValue(undefined);
+
+    registerTelegramNativeCommands({
+      ...buildParams({}, "work"),
+      bot: {
+        api: {
+          setMyCommands,
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn(),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+      telegramCfg: {
+        customCommands,
+      } as TelegramAccountConfig,
+      nativeEnabled: true,
+      nativeSkillsEnabled: false,
+    });
+
+    const registeredCommands = await waitForRegisteredCommands(setMyCommands);
+    expect(registeredCommands).toHaveLength(100);
+    expect(registeredCommands[0].command).toBe("topic");
   });
 
   it("normalizes hyphenated native command names for Telegram registration", async () => {
@@ -269,5 +346,249 @@ describe("registerTelegramNativeCommands", () => {
       }),
     );
     expect(sendMessage).not.toHaveBeenCalledWith(123, "Command not found.");
+  });
+
+  it("registers native /topic command", async () => {
+    const setMyCommands = vi.fn().mockResolvedValue(undefined);
+
+    registerTelegramNativeCommands({
+      ...buildParams({}),
+      bot: {
+        api: {
+          setMyCommands,
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn(),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const registeredCommands = await waitForRegisteredCommands(setMyCommands);
+    expect(registeredCommands.some((entry) => entry.command === "topic")).toBe(true);
+  });
+
+  it("/topic maps DM topics to a named session key in account scope", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const writeOptions = { envSnapshotForRestore: { TEST: "1" } };
+
+    configMocks.readConfigFileSnapshotForWrite.mockResolvedValue({
+      snapshot: {
+        config: {
+          channels: {
+            telegram: {
+              direct: {
+                "123": {
+                  topics: {
+                    "9": {
+                      sessionKey: "agent:main:main:thread:123:legacy",
+                    },
+                  },
+                },
+              },
+              accounts: {
+                work: {
+                  direct: {
+                    "123": {
+                      topics: {
+                        "7": {
+                          sessionKey: "agent:main:main:thread:123:existing",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      writeOptions,
+    });
+
+    registerTelegramNativeCommands({
+      ...buildParams({}, "work"),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage,
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("topic");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "Ops",
+      message: {
+        message_id: 1,
+        message_thread_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+      },
+    });
+
+    expect(configMocks.writeConfigFile).toHaveBeenCalledTimes(1);
+    const [writtenConfig, writtenOptions] = configMocks.writeConfigFile.mock.calls[0] as [
+      OpenClawConfig,
+      Record<string, unknown>,
+    ];
+    expect(writtenOptions).toEqual(writeOptions);
+    expect(
+      writtenConfig.channels?.telegram?.accounts?.work?.direct?.["123"]?.topics?.["42"]?.sessionKey,
+    ).toBe("agent:main:main:thread:123:ops");
+    expect(writtenConfig.channels?.telegram?.direct?.["123"]?.topics?.["42"]).toBeUndefined();
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      'Mapped topic "Ops" to session agent:main:main:thread:123:ops. Config path: channels.telegram.accounts."work".direct."123".topics."42".sessionKey.',
+      { message_thread_id: 42 },
+    );
+  });
+
+  it("/topic clears mapping on empty input and does not reserve literal off", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    configMocks.readConfigFileSnapshotForWrite.mockResolvedValue({
+      snapshot: {
+        config: {
+          channels: {
+            telegram: {
+              accounts: {
+                work: {
+                  direct: {
+                    "123": {
+                      topics: {
+                        "42": {
+                          sessionKey: "agent:main:main:thread:123:ops",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      writeOptions: {},
+    });
+
+    registerTelegramNativeCommands({
+      ...buildParams({}, "work"),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage,
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("topic");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: " ",
+      message: {
+        message_id: 1,
+        message_thread_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+      },
+    });
+
+    expect(configMocks.writeConfigFile).toHaveBeenCalledTimes(1);
+    const [writtenConfig] = configMocks.writeConfigFile.mock.calls[0] as [OpenClawConfig];
+    expect(
+      writtenConfig.channels?.telegram?.accounts?.work?.direct?.["123"]?.topics?.["42"]?.sessionKey,
+    ).toBeUndefined();
+    expect(writtenConfig.channels?.telegram?.accounts?.work).toBeUndefined();
+    expect(writtenConfig.channels?.telegram?.accounts).toBeUndefined();
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      'Cleared topic mapping. Using default session key agent:main:main:thread:123:42. Config path: channels.telegram.accounts."work".direct."123".topics."42".sessionKey.',
+      { message_thread_id: 42 },
+    );
+
+    await handler?.({
+      match: "off",
+      message: {
+        message_id: 2,
+        message_thread_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+      },
+    });
+
+    expect(sendMessage).toHaveBeenLastCalledWith(
+      123,
+      'Mapped topic "off" to session agent:main:main:thread:123:off. Config path: channels.telegram.accounts."work".direct."123".topics."42".sessionKey.',
+      { message_thread_id: 42 },
+    );
+  });
+
+  it("/topic respects configWrites=false and skips writes", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+
+    configMocks.readConfigFileSnapshotForWrite.mockResolvedValue({
+      snapshot: {
+        config: {
+          channels: {
+            telegram: {
+              accounts: {
+                work: {
+                  configWrites: false,
+                },
+              },
+            },
+          },
+        },
+      },
+      writeOptions: {},
+    });
+
+    registerTelegramNativeCommands({
+      ...buildParams({}, "work"),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage,
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("topic");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "Ops",
+      message: {
+        message_id: 1,
+        message_thread_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+      },
+    });
+
+    expect(configMocks.writeConfigFile).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      "Config writes are disabled for this Telegram account.",
+      { message_thread_id: 42 },
+    );
   });
 });

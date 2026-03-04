@@ -228,6 +228,7 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
 - CLI path syntax for numeric keys must be quoted, for example:
   - `openclaw config set 'channels.telegram.direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
   - `openclaw config set 'channels.telegram.accounts."work".direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
+- Native `/topic <name>` command maps the current DM topic to a named session key override (`channels.telegram.direct.<chatId>.topics.<threadId>.sessionKey`); `/topic` with empty/whitespace input clears that override.
 - Telegram stream previews use `sendMessage` + `editMessageText` (works in direct and group chats).
 - Retry policy: see [Retry policy](/concepts/retry).
 

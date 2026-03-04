@@ -324,6 +324,11 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     Native command defaults:
 
     - `commands.native: "auto"` enables native commands for Telegram
+    - `/topic <name>` maps the current DM topic to a named session key override at `channels.telegram.direct.<chatId>.topics.<threadId>.sessionKey`
+      - run it inside the DM topic you want to rename (for example `/topic ops`)
+      - run `/topic` with no name (or only whitespace) to clear the override and return to the default thread session key
+      - literal names like `off` are treated as normal topic names (not reserved)
+      - config writes are gated by `channels.telegram.configWrites` / account-level `configWrites`
 
     Add custom command menu entries:
 

@@ -189,6 +189,8 @@ export type TelegramTopicConfig = {
   disableAudioPreflight?: boolean;
   /** Route this topic to a specific agent (overrides group-level and binding routing). */
   agentId?: string;
+  /** Optional fixed session key override (primarily for DM topics). */
+  sessionKey?: string;
 };
 
 export type TelegramGroupConfig = {

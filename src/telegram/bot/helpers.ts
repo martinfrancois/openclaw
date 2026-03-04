@@ -154,9 +154,52 @@ export function buildTelegramThreadParams(thread?: TelegramThreadSpec | null) {
 }
 
 /**
+ * Build a display label for Telegram DM topic sessions.
+ * Output format: `telegram:<chatId>:<topic>` where <topic> is derived from sessionKey.
+ */
+export function buildTelegramDmTopicThreadLabel(params: {
+  chatId: number | string;
+  sessionKey?: string | null;
+}): string | undefined {
+  const rawSessionKey = params.sessionKey?.trim();
+  if (!rawSessionKey) {
+    return undefined;
+  }
+
+  const threadIndex = rawSessionKey.lastIndexOf(":thread:");
+  if (threadIndex === -1) {
+    // Config-set topic mapping values are typically plain strings like `topictest`.
+    if (rawSessionKey.includes(":")) {
+      return undefined;
+    }
+    return `telegram:${params.chatId}:${rawSessionKey}`;
+  }
+
+  const threadPart = rawSessionKey.slice(threadIndex + 8);
+  const threadPieces = threadPart.split(":");
+  if (threadPieces.length < 2) {
+    return undefined;
+  }
+
+  const topicName = threadPieces.slice(1).join(":").trim();
+  if (!topicName) {
+    return undefined;
+  }
+  return `telegram:${params.chatId}:${topicName}`;
+}
+
+/**
  * Build thread params for typing indicators (sendChatAction).
  * Empirically, General topic (id=1) needs message_thread_id for typing to appear.
  */
+export function buildTelegramDirectPeerId(chatId: number | string, messageThreadId?: number) {
+  return messageThreadId != null ? `${chatId}:${messageThreadId}` : String(chatId);
+}
+
+export function buildTelegramDirectFrom(chatId: number | string, messageThreadId?: number) {
+  return `telegram:${buildTelegramDirectPeerId(chatId, messageThreadId)}`;
+}
+
 export function buildTypingThreadParams(messageThreadId?: number) {
   if (messageThreadId == null) {
     return undefined;

@@ -65,10 +65,12 @@ import {
   buildGroupLabel,
   buildSenderLabel,
   buildSenderName,
+  buildTelegramDirectFrom,
   resolveTelegramDirectPeerId,
   buildTelegramGroupFrom,
   buildTelegramGroupPeerId,
   buildTelegramParentPeer,
+  buildTelegramDmTopicThreadLabel,
   buildTypingThreadParams,
   resolveTelegramMediaPlaceholder,
   expandTextLinks,
@@ -82,7 +84,10 @@ import type { StickerMetadata, TelegramContext } from "./bot/types.js";
 import { enforceTelegramDmAccess } from "./dm-access.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
 import { evaluateTelegramGroupBaseAccess } from "./group-access.js";
-import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
+import {
+  resolveTelegramGroupPromptSettings,
+  resolveTelegramTopicSessionKey,
+} from "./group-config-helpers.js";
 import {
   buildTelegramStatusReactionVariants,
   resolveTelegramAllowedEmojiReactions,
@@ -392,12 +397,17 @@ export const buildTelegramMessageContext = async ({
   };
 
   const baseSessionKey = route.sessionKey;
-  // DMs: use thread suffix for session isolation (works regardless of dmScope)
+  const topicSessionKey = resolveTelegramTopicSessionKey({
+    isGroup,
+    topicConfig,
+    baseSessionKey,
+  });
+  // DMs: use thread suffix for session isolation unless a topic config overrides the session key.
   const threadKeys =
-    dmThreadId != null
+    dmThreadId != null && topicSessionKey === baseSessionKey
       ? resolveThreadSessionKeys({ baseSessionKey, threadId: `${chatId}:${dmThreadId}` })
       : null;
-  const sessionKey = threadKeys?.sessionKey ?? baseSessionKey;
+  const sessionKey = threadKeys?.sessionKey ?? topicSessionKey;
   const mentionRegexes = buildMentionRegexes(cfg, route.agentId);
   // Compute requireMention after access checks and final route selection.
   const activationOverride = resolveGroupActivation({
@@ -734,9 +744,18 @@ export const buildTelegramMessageContext = async ({
     : "";
   const groupLabel = isGroup ? buildGroupLabel(msg, chatId, resolvedThreadId) : undefined;
   const senderName = buildSenderName(msg);
+  const topicDisplayLabel =
+    !isGroup && dmThreadId != null
+      ? buildTelegramDmTopicThreadLabel({
+          chatId,
+          sessionKey,
+        })
+      : undefined;
+  const to = isGroup ? `telegram:${chatId}` : buildTelegramDirectFrom(chatId, dmThreadId);
+  const from = isGroup ? buildTelegramGroupFrom(chatId, resolvedThreadId) : to;
   const conversationLabel = isGroup
     ? (groupLabel ?? `group:${chatId}`)
-    : buildSenderLabel(msg, senderId || chatId);
+    : (topicDisplayLabel ?? buildSenderLabel(msg, senderId || chatId));
   const storePath = resolveStorePath(cfg.session?.store, {
     agentId: route.agentId,
   });
@@ -801,12 +820,13 @@ export const buildTelegramMessageContext = async ({
     InboundHistory: inboundHistory,
     RawBody: rawBody,
     CommandBody: commandBody,
-    From: isGroup ? buildTelegramGroupFrom(chatId, resolvedThreadId) : `telegram:${chatId}`,
-    To: `telegram:${chatId}`,
+    From: from,
+    To: to,
     SessionKey: sessionKey,
     AccountId: route.accountId,
     ChatType: isGroup ? "group" : "direct",
     ConversationLabel: conversationLabel,
+    ThreadLabel: topicDisplayLabel,
     GroupSubject: isGroup ? (msg.chat.title ?? undefined) : undefined,
     GroupSystemPrompt: isGroup || (!isGroup && groupConfig) ? groupSystemPrompt : undefined,
     SenderName: senderName,
@@ -858,7 +878,7 @@ export const buildTelegramMessageContext = async ({
     IsForum: isForum,
     // Originating channel for reply routing.
     OriginatingChannel: "telegram" as const,
-    OriginatingTo: `telegram:${chatId}`,
+    OriginatingTo: isGroup ? `telegram:${chatId}` : to,
   });
 
   const pinnedMainDmOwner = !isGroup
@@ -877,7 +897,7 @@ export const buildTelegramMessageContext = async ({
       ? {
           sessionKey: route.mainSessionKey,
           channel: "telegram",
-          to: `telegram:${chatId}`,
+          to,
           accountId: route.accountId,
           // Preserve DM topic threadId for replies (fixes #8891)
           threadId: dmThreadId != null ? String(dmThreadId) : undefined,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTelegramDirectFrom,
+  buildTelegramDirectPeerId,
   buildTelegramThreadParams,
   buildTypingThreadParams,
   describeReplyTarget,
@@ -25,6 +27,23 @@ describe("resolveTelegramForumThreadId", () => {
     { isForum: true, messageThreadId: 99, expected: 99 },
   ])("resolves forum topic ids", ({ expected, ...params }) => {
     expect(resolveTelegramForumThreadId(params)).toBe(expected);
+  });
+});
+
+describe("buildTelegramDirectPeerId", () => {
+  it.each([
+    { messageThreadId: undefined, expected: "123" },
+    { messageThreadId: 42, expected: "123:42" },
+    { messageThreadId: -1, expected: "123:-1" },
+  ])("builds direct peer identifiers", ({ messageThreadId, expected }) => {
+    expect(buildTelegramDirectPeerId(123, messageThreadId)).toBe(expected);
+  });
+
+  it.each([
+    { messageThreadId: undefined, expected: "telegram:123" },
+    { messageThreadId: 42, expected: "telegram:123:42" },
+  ])("builds direct from values", ({ messageThreadId, expected }) => {
+    expect(buildTelegramDirectFrom(123, messageThreadId)).toBe(expected);
   });
 });
 

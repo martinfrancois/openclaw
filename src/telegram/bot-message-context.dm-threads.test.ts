@@ -21,6 +21,74 @@ describe("buildTelegramMessageContext dm thread sessions", () => {
     expect(ctx).not.toBeNull();
     expect(ctx?.ctxPayload?.MessageThreadId).toBe(42);
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main:thread:1234:42");
+    expect(ctx?.ctxPayload?.ConversationLabel).toBe("telegram:1234:42");
+    expect(ctx?.ctxPayload?.ThreadLabel).toBe("telegram:1234:42");
+    expect(ctx?.ctxPayload?.To).toBe("telegram:1234:42");
+    expect(ctx?.ctxPayload?.OriginatingTo).toBe("telegram:1234:42");
+  });
+
+  it("uses configured topic sessionKey override for dm topics", async () => {
+    const ctx = await buildTelegramMessageContextForTest({
+      message: {
+        message_id: 9,
+        chat: { id: 1234, type: "private" },
+        date: 1700000009,
+        text: "hello",
+        message_thread_id: 42,
+        from: { id: 42, first_name: "Alice" },
+      },
+      resolveTelegramGroupConfig: (_chatId, messageThreadId) => ({
+        groupConfig: {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "topictest",
+            },
+          },
+        },
+        topicConfig: messageThreadId != null ? { sessionKey: "topictest" } : undefined,
+      }),
+    });
+
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.MessageThreadId).toBe(42);
+    expect(ctx?.ctxPayload?.SessionKey).toBe("topictest");
+    expect(ctx?.ctxPayload?.ConversationLabel).toBe("telegram:1234:topictest");
+    expect(ctx?.ctxPayload?.ThreadLabel).toBe("telegram:1234:topictest");
+    expect(ctx?.ctxPayload?.To).toBe("telegram:1234:42");
+    expect(ctx?.ctxPayload?.OriginatingTo).toBe("telegram:1234:42");
+  });
+
+  it("falls back to sender label when dm topic sessionKey override is a full agent key", async () => {
+    const ctx = await buildTelegramMessageContextForTest({
+      message: {
+        message_id: 10,
+        chat: { id: 1234, type: "private" },
+        date: 1700000010,
+        text: "hello",
+        message_thread_id: 42,
+        from: { id: 42, first_name: "Alice" },
+      },
+      resolveTelegramGroupConfig: (_chatId, messageThreadId) => ({
+        groupConfig: {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+            },
+          },
+        },
+        topicConfig: messageThreadId != null ? { sessionKey: "agent:ops:main" } : undefined,
+      }),
+    });
+
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.MessageThreadId).toBe(42);
+    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:ops:main");
+    expect(ctx?.ctxPayload?.ConversationLabel).toMatch(/^Alice/);
+    expect(ctx?.ctxPayload?.ThreadLabel).toBeUndefined();
+    expect(ctx?.ctxPayload?.To).toBe("telegram:1234:42");
+    expect(ctx?.ctxPayload?.OriginatingTo).toBe("telegram:1234:42");
   });
 
   it("keeps legacy dm session key when no thread id", async () => {
@@ -35,6 +103,8 @@ describe("buildTelegramMessageContext dm thread sessions", () => {
     expect(ctx).not.toBeNull();
     expect(ctx?.ctxPayload?.MessageThreadId).toBeUndefined();
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main");
+    expect(ctx?.ctxPayload?.ConversationLabel).toMatch(/^Alice/);
+    expect(ctx?.ctxPayload?.ThreadLabel).toBeUndefined();
   });
 });
 

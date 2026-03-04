@@ -121,6 +121,48 @@ Token resolution order is account-aware. In practice, config values win over env
 
     For one-owner bots, prefer `dmPolicy: "allowlist"` with explicit numeric `allowFrom` IDs to keep access policy durable in config (instead of depending on previous pairing approvals).
 
+    DM-level overrides are configured under `channels.telegram.direct`:
+
+    - `channels.telegram.direct.<chatId|*>.dmPolicy`
+    - `channels.telegram.direct.<chatId|*>.allowFrom`
+    - `channels.telegram.direct.<chatId|*>.requireTopic`
+    - `channels.telegram.direct.<chatId|*>.topics.<threadId>.*`
+
+    Topic entries inherit DM-level settings unless overridden (`allowFrom`, `skills`, `systemPrompt`, `enabled`, `groupPolicy`, `sessionKey`).
+
+    Example (force DM topic 42 into an explicit session alias):
+
+```json5
+{
+  channels: {
+    telegram: {
+      direct: {
+        "123456789": {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+            },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+    CLI path syntax for numeric keys must be quoted:
+
+```bash
+openclaw config set 'channels.telegram.direct."123456789".topics."42".sessionKey' '"agent:ops:main"'
+```
+
+    Account-specific Telegram config uses the same quoted numeric keys:
+
+```bash
+openclaw config set 'channels.telegram.accounts."work".direct."123456789".topics."42".sessionKey' '"agent:ops:main"'
+```
+
     ### Finding your Telegram user ID
 
     Safer (no third-party bot):
@@ -226,6 +268,7 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 - Inbound messages normalize into the shared channel envelope with reply metadata and media placeholders.
 - Group sessions are isolated by group ID. Forum topics append `:topic:<threadId>` to keep topics isolated.
 - DM messages can carry `message_thread_id`; OpenClaw routes them with thread-aware session keys and preserves thread ID for replies.
+- DM topic config can pin a topic to a specific session via `channels.telegram.direct.<chatId|*>.topics.<threadId>.sessionKey`.
 - Long polling uses grammY runner with per-chat/per-thread sequencing. Overall runner sink concurrency uses `agents.defaults.maxConcurrent`.
 - Telegram Bot API has no read-receipt support (`sendReadReceipts` does not apply).
 
@@ -834,7 +877,13 @@ Primary reference:
   - `channels.telegram.groups.<id>.topics.<threadId>.groupPolicy`: per-topic override for groupPolicy (`open | allowlist | disabled`).
   - `channels.telegram.groups.<id>.topics.<threadId>.requireMention`: per-topic mention gating override.
   - top-level `bindings[]` with `type: "acp"` and canonical topic id `chatId:topic:topicId` in `match.peer.id`: persistent ACP topic binding fields (see [ACP Agents](/tools/acp-agents#channel-specific-settings)).
-  - `channels.telegram.direct.<id>.topics.<threadId>.agentId`: route DM topics to a specific agent (same behavior as forum topics).
+- `channels.telegram.direct`: per-DM defaults + overrides (use `"*"` for global DM defaults).
+  - `channels.telegram.direct.<chatId|*>.dmPolicy`: per-DM override for DM access policy.
+  - `channels.telegram.direct.<chatId|*>.allowFrom`: per-DM sender allowlist override.
+  - `channels.telegram.direct.<chatId|*>.requireTopic`: require DM topic thread IDs when `true`.
+  - `channels.telegram.direct.<chatId|*>.topics.<threadId>.*`: per-DM-topic overrides.
+  - `channels.telegram.direct.<chatId|*>.topics.<threadId>.agentId`: route DM topics to a specific agent (same behavior as forum topics).
+  - `channels.telegram.direct.<chatId|*>.topics.<threadId>.sessionKey`: route this DM topic into a fixed session alias.
 - `channels.telegram.capabilities.inlineButtons`: `off | dm | group | all | allowlist` (default: allowlist).
 - `channels.telegram.accounts.<account>.capabilities.inlineButtons`: per-account override.
 - `channels.telegram.commands.nativeSkills`: enable/disable Telegram native skills commands.

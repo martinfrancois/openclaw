@@ -173,6 +173,20 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
           },
         },
       },
+      direct: {
+        "*": {
+          dmPolicy: "pairing",
+        },
+        "123456789": {
+          requireTopic: true,
+          topics: {
+            "42": {
+              sessionKey: "agent:ops:main",
+              systemPrompt: "Handle ops-only requests.",
+            },
+          },
+        },
+      },
       customCommands: [
         { command: "backup", description: "Git backup" },
         { command: "generate", description: "Create an image" },
@@ -208,6 +222,12 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
 - In multi-account setups (2+ account ids), set an explicit default (`channels.telegram.defaultAccount` or `channels.telegram.accounts.default`) to avoid fallback routing; `openclaw doctor` warns when this is missing or invalid.
 - `configWrites: false` blocks Telegram-initiated config writes (supergroup ID migrations, `/config set|unset`).
 - Top-level `bindings[]` entries with `type: "acp"` configure persistent ACP bindings for forum topics (use canonical `chatId:topic:topicId` in `match.peer.id`). Field semantics are shared in [ACP Agents](/tools/acp-agents#channel-specific-settings).
+- `channels.telegram.direct` config enables per-DM defaults and per-DM-topic overrides (`dmPolicy`, `allowFrom`, `requireTopic`, `topics`).
+- `channels.telegram.direct.<chatId|*>.topics.<threadId>.sessionKey` pins a DM topic to a fixed session alias (instead of the default thread-suffixed session key).
+- Topic-level overrides can include access/prompt fields (`allowFrom`, `skills`, `systemPrompt`, `enabled`, `groupPolicy`) and now `sessionKey` for DM topics.
+- CLI path syntax for numeric keys must be quoted, for example:
+  - `openclaw config set 'channels.telegram.direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
+  - `openclaw config set 'channels.telegram.accounts."work".direct."123456789".topics."42".sessionKey' '"agent:ops:main"'`
 - Telegram stream previews use `sendMessage` + `editMessageText` (works in direct and group chats).
 - Retry policy: see [Retry policy](/concepts/retry).
 

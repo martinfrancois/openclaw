@@ -426,6 +426,7 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
     - `deleteMessage` (`chatId`, `messageId`)
     - `editMessage` (`chatId`, `messageId`, `content`)
     - `createForumTopic` (`chatId`, `name`, optional `iconColor`, `iconCustomEmojiId`)
+    - `editForumTopic` (`chatId`, `messageThreadId`, optional `name`, `iconCustomEmojiId`)
 
     Channel message actions expose ergonomic aliases (`send`, `react`, `delete`, `edit`, `sticker`, `sticker-search`, `topic-create`).
 
@@ -433,10 +434,13 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 
     - `channels.telegram.actions.sendMessage`
     - `channels.telegram.actions.deleteMessage`
+    - `channels.telegram.actions.editMessage`
     - `channels.telegram.actions.reactions`
     - `channels.telegram.actions.sticker` (default: disabled)
+    - `channels.telegram.actions.createForumTopic`
+    - `channels.telegram.actions.editForumTopic`
 
-    Note: `edit` and `topic-create` are currently enabled by default and do not have separate `channels.telegram.actions.*` toggles.
+    Note: all actions default to enabled except `sticker` (default: disabled).
     Runtime sends use the active config/secrets snapshot (startup/reload), so action paths do not perform ad-hoc SecretRef re-resolution per send.
 
     Reaction removal semantics: [/tools/reactions](/tools/reactions)
@@ -984,29 +988,36 @@ Primary reference:
 - `channels.telegram.actions.sendMessage`: gate Telegram tool message sends.
 - `channels.telegram.actions.poll`: gate Telegram poll creation (requires `sendMessage`).
 - `channels.telegram.actions.deleteMessage`: gate Telegram tool message deletes.
+- `channels.telegram.actions.editMessage`: gate Telegram tool message edits.
 - `channels.telegram.actions.sticker`: gate Telegram sticker actions — send and search (default: false).
+- `channels.telegram.actions.createForumTopic`: gate Telegram forum topic creation.
+- `channels.telegram.actions.editForumTopic`: gate Telegram forum topic editing (rename / change icon).
+- `channels.telegram.name`: optional display name for this account (used in CLI/UI lists).
+- `channels.telegram.markdown`: markdown formatting overrides (e.g., table rendering).
+- `channels.telegram.healthMonitor`: channel health monitor overrides for this account (`enabled` to control restart behavior).
 - `channels.telegram.reactionNotifications`: `off | own | all` — control which reactions trigger system events (default: `own` when not set).
 - `channels.telegram.reactionLevel`: `off | ack | minimal | extensive` — control agent's reaction capability (default: `minimal` when not set).
 - `channels.telegram.heartbeat`: per-channel heartbeat visibility override.
 - `channels.telegram.responsePrefix`: per-channel response-prefix override.
 - `channels.telegram.ackReaction`: per-channel ack reaction override.
+- `channels.telegram.silentErrorReplies`: send Telegram bot error replies silently (no notification sound). Default: false.
 
 - [Configuration reference - Telegram](/gateway/configuration-reference#telegram)
 
 Telegram-specific high-signal fields:
 
-- startup/auth: `enabled`, `botToken`, `tokenFile`, `accounts.*` (`tokenFile` must point to a regular file; symlinks are rejected)
+- startup/auth: `enabled`, `botToken`, `tokenFile`, `accounts.*` (`tokenFile` must point to a regular file; symlinks are rejected), `name` (account display name)
 - access control: `dmPolicy`, `allowFrom`, `groupPolicy`, `groupAllowFrom`, `groups`, `groups.*.topics.*`, `direct`, `direct.*.topics.*`, top-level `bindings[]` (`type: "acp"`)
 - exec approvals: `execApprovals`, `accounts.*.execApprovals`
 - command/menu: `commands.native`, `commands.nativeSkills`, `customCommands`
 - threading/replies: `replyToMode`, `threadBindings`
 - streaming: `streaming` (preview), `blockStreaming`, `blockStreamingCoalesce`
-- formatting/delivery: `textChunkLimit`, `chunkMode`, `linkPreview`, `responsePrefix`
+- formatting/delivery: `textChunkLimit`, `chunkMode`, `linkPreview`, `responsePrefix`, `markdown`
 - media/network: `mediaMaxMb`, `timeoutSeconds`, `retry`, `network.autoSelectFamily`, `network.dnsResultOrder`, `proxy`
 - webhook: `webhookUrl`, `webhookSecret`, `webhookPath`, `webhookHost`, `webhookPort`, `webhookCertPath`
-- actions/capabilities: `capabilities.inlineButtons`, `actions.sendMessage|editMessage|deleteMessage|reactions|poll|sticker`
+- actions/capabilities: `capabilities.inlineButtons`, `actions.sendMessage|editMessage|deleteMessage|reactions|poll|sticker|createForumTopic|editForumTopic`
 - reactions: `reactionNotifications`, `reactionLevel`, `ackReaction`
-- writes/history: `configWrites`, `historyLimit`, `dmHistoryLimit`, `dms.*.historyLimit`, `heartbeat`
+- writes/history: `configWrites`, `historyLimit`, `dmHistoryLimit`, `dms.*.historyLimit`, `heartbeat`, `healthMonitor`
 
 ## Related
 

@@ -307,6 +307,24 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("sessions_send");
   });
 
+  it("does not inject fallback tool guidance when the tool list is explicitly empty", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+    });
+
+    expect(prompt).toContain("Tool availability (filtered by policy):");
+    expect(prompt).toContain("No tools are available in this session.");
+    expect(prompt).not.toContain("Tool names are case-sensitive. Call tools exactly as listed.");
+    expect(prompt).not.toContain("Pi lists the standard tools above. This runtime enables:");
+    expect(prompt).not.toContain("For long waits, avoid rapid poll loops:");
+    expect(prompt).not.toContain("If a task is more complex or takes longer, spawn a sub-agent.");
+    expect(prompt).not.toContain("When exec returns approval-pending");
+    expect(prompt).not.toContain(
+      "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
+    );
+  });
+
   it("documents ACP sessions_spawn agent targeting requirements", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

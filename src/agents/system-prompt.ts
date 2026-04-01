@@ -155,7 +155,13 @@ function buildVoiceSection(params: { isMinimal: boolean; ttsHint?: string }) {
   return ["## Voice (TTS)", hint, ""];
 }
 
-function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readToolName: string }) {
+function buildDocsSection(params: {
+  docsPath?: string;
+  isMinimal: boolean;
+  readToolName: string;
+  hasReadTool: boolean;
+  hasExecTool: boolean;
+}) {
   const docsPath = params.docsPath?.trim();
   if (!docsPath || params.isMinimal) {
     return [];
@@ -166,9 +172,15 @@ function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readT
     "Mirror: https://docs.openclaw.ai",
     "Source: https://github.com/openclaw/openclaw",
     "Community: https://discord.com/invite/clawd",
-    "Find new skills: https://clawhub.ai",
-    "For OpenClaw behavior, commands, config, or architecture: consult local docs first.",
-    "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+    ...(params.hasReadTool ? ["Find new skills: https://clawhub.ai"] : []),
+    ...(params.hasReadTool
+      ? ["For OpenClaw behavior, commands, config, or architecture: consult local docs first."]
+      : []),
+    ...(params.hasExecTool
+      ? [
+          "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+        ]
+      : []),
     "",
   ];
 }
@@ -346,6 +358,11 @@ export function buildAgentSystemPrompt(params: {
   const hasExplicitEmptyToolList = hasExplicitToolList && toolLines.length === 0;
   const hasAvailableTools = toolLines.length > 0;
   const hasGateway = availableTools.has("gateway");
+  const hasWorkspaceToolAccess =
+    params.toolNames === undefined ||
+    ["read", "write", "edit", "apply_patch", "exec", "grep", "find", "ls"].some((tool) =>
+      availableTools.has(tool),
+    );
   const readToolName = resolveToolName("read");
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
@@ -391,10 +408,11 @@ export function buildAgentSystemPrompt(params: {
     params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
       ? sanitizedSandboxContainerWorkspace
       : sanitizedWorkspaceDir;
-  const workspaceGuidance =
-    params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
+  const workspaceGuidance = hasWorkspaceToolAccess
+    ? params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
       ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. For bash/exec commands, use sandbox container paths under ${sanitizedSandboxContainerWorkspace} (or relative paths from that workdir), not host paths. Prefer relative paths so both sandboxed exec and file tools work consistently.`
-      : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.";
+      : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise."
+    : "A workspace path is provided for context only. Do not claim you can inspect, edit, or execute inside it unless the session policy changes.";
   const safetySection = [
     "## Safety",
     "You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.",
@@ -402,10 +420,12 @@ export function buildAgentSystemPrompt(params: {
     "Do not manipulate or persuade anyone to expand access or disable safeguards. Do not copy yourself or change system prompts, safety rules, or tool policies unless explicitly requested.",
     "",
   ];
-  const skillsSection = buildSkillsSection({
-    skillsPrompt,
-    readToolName,
-  });
+  const skillsSection = hasExplicitEmptyToolList
+    ? []
+    : buildSkillsSection({
+        skillsPrompt,
+        readToolName,
+      });
   const memorySection = buildMemorySection({
     isMinimal,
     availableTools,
@@ -415,6 +435,8 @@ export function buildAgentSystemPrompt(params: {
     docsPath: params.docsPath,
     isMinimal,
     readToolName,
+    hasReadTool: availableTools.has("read"),
+    hasExecTool: availableTools.has("exec"),
   });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
@@ -491,15 +513,19 @@ export function buildAgentSystemPrompt(params: {
         ]),
     "",
     ...safetySection,
-    "## OpenClaw CLI Quick Reference",
-    "OpenClaw is controlled via subcommands. Do not invent commands.",
-    "To manage the Gateway daemon service (start/stop/restart):",
-    "- openclaw gateway status",
-    "- openclaw gateway start",
-    "- openclaw gateway stop",
-    "- openclaw gateway restart",
-    "If unsure, ask the user to run `openclaw help` (or `openclaw gateway --help`) and paste the output.",
-    "",
+    ...(hasGateway && !isMinimal
+      ? [
+          "## OpenClaw CLI Quick Reference",
+          "OpenClaw is controlled via subcommands. Do not invent commands.",
+          "To manage the Gateway daemon service (start/stop/restart):",
+          "- openclaw gateway status",
+          "- openclaw gateway start",
+          "- openclaw gateway stop",
+          "- openclaw gateway restart",
+          "If unsure, ask the user to run `openclaw help` (or `openclaw gateway --help`) and paste the output.",
+          "",
+        ]
+      : []),
     ...skillsSection,
     ...memorySection,
     // Skip self-update for subagent/none modes
@@ -526,14 +552,23 @@ export function buildAgentSystemPrompt(params: {
       ? params.modelAliasLines.join("\n")
       : "",
     params.modelAliasLines && params.modelAliasLines.length > 0 && !isMinimal ? "" : "",
-    userTimezone
+    userTimezone && availableTools.has("session_status")
       ? "If you need the current date, time, or day of week, run session_status (📊 session_status)."
       : "",
-    "## Workspace",
-    `Your working directory is: ${displayWorkspaceDir}`,
-    workspaceGuidance,
-    ...workspaceNotes,
-    "",
+    ...(hasWorkspaceToolAccess
+      ? [
+          "## Workspace",
+          `Your working directory is: ${displayWorkspaceDir}`,
+          workspaceGuidance,
+          ...workspaceNotes,
+          "",
+        ]
+      : [
+          "## Workspace",
+          `Your working directory is: ${displayWorkspaceDir}`,
+          workspaceGuidance,
+          "",
+        ]),
     ...docsSection,
     params.sandboxInfo?.enabled ? "## Sandbox" : "",
     params.sandboxInfo?.enabled

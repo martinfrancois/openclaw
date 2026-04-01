@@ -260,9 +260,10 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("<final>...</final>");
   });
 
-  it("includes a CLI quick reference section", () => {
+  it("includes a CLI quick reference section when the gateway tool is available", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
+      toolNames: ["gateway"],
     });
 
     expect(prompt).toContain("## OpenClaw CLI Quick Reference");
@@ -323,6 +324,26 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).not.toContain(
       "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
     );
+  });
+
+  it("keeps explicit empty-tool prompts internally consistent across later sections", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      userTimezone: "America/Chicago",
+      docsPath: "/tmp/openclaw/docs",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+    });
+
+    expect(prompt).not.toContain("## OpenClaw CLI Quick Reference");
+    expect(prompt).not.toContain(
+      "If you need the current date, time, or day of week, run session_status",
+    );
+    expect(prompt).not.toContain("Find new skills: https://clawhub.ai");
+    expect(prompt).not.toContain("When diagnosing issues, run `openclaw status` yourself");
+    expect(prompt).not.toContain("## Skills (mandatory)");
+    expect(prompt).toContain("A workspace path is provided for context only.");
   });
 
   it("documents ACP sessions_spawn agent targeting requirements", () => {
@@ -416,10 +437,11 @@ describe("buildAgentSystemPrompt", () => {
     );
   });
 
-  it("includes docs guidance when docsPath is provided", () => {
+  it("includes docs guidance when docsPath is provided and read access exists", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
       docsPath: "/tmp/openclaw/docs",
+      toolNames: ["read", "exec"],
     });
 
     expect(prompt).toContain("## Documentation");
@@ -475,10 +497,11 @@ describe("buildAgentSystemPrompt", () => {
     }
   });
 
-  it("hints to use session_status for current date/time", () => {
+  it("hints to use session_status for current date/time only when that tool is available", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/clawd",
       userTimezone: "America/Chicago",
+      toolNames: ["session_status"],
     });
 
     expect(prompt).toContain("session_status");

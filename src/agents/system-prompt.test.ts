@@ -260,7 +260,7 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("<final>...</final>");
   });
 
-  it("includes a CLI quick reference section when the gateway tool is available", () => {
+  it("includes a CLI quick reference section for a gateway-only tool list", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
       toolNames: ["gateway"],
@@ -579,7 +579,7 @@ describe("buildAgentSystemPrompt", () => {
     }
   });
 
-  it("hints to use session_status for current date/time only when that tool is available", () => {
+  it("includes the session_status hint for a session_status-only tool list", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/clawd",
       userTimezone: "America/Chicago",

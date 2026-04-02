@@ -106,7 +106,8 @@ function buildReplyTagsSection(isMinimal: boolean) {
 
 function buildMessagingSection(params: {
   isMinimal: boolean;
-  availableTools: Set<string>;
+  includeToolOnlyGuidance: boolean;
+  hasMessageTool: boolean;
   messageChannelOptions: string;
   inlineButtonsEnabled: boolean;
   runtimeChannel?: string;
@@ -118,28 +119,32 @@ function buildMessagingSection(params: {
   return [
     "## Messaging",
     "- Reply in current session → automatically routes to the source channel (Signal, Telegram, etc.)",
-    "- Cross-session messaging → use sessions_send(sessionKey, message)",
-    "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
     `- Runtime-generated completion events may ask for a user update. Rewrite those in your normal assistant voice and send the update (do not forward raw internal metadata or default to ${SILENT_REPLY_TOKEN}).`,
-    "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
-    params.availableTools.has("message")
+    ...(params.includeToolOnlyGuidance
       ? [
-          "",
-          "### message tool",
-          "- Use `message` for proactive sends + channel actions (polls, reactions, etc.).",
-          "- For `action=send`, include `to` and `message`.",
-          `- If multiple channels are configured, pass \`channel\` (${params.messageChannelOptions}).`,
-          `- If you use \`message\` (\`action=send\`) to deliver your user-visible reply, respond with ONLY: ${SILENT_REPLY_TOKEN} (avoid duplicate replies).`,
-          params.inlineButtonsEnabled
-            ? "- Inline buttons supported. Use `action=send` with `buttons=[[{text,callback_data,style?}]]`; `style` can be `primary`, `success`, or `danger`."
-            : params.runtimeChannel
-              ? `- Inline buttons not enabled for ${params.runtimeChannel}. If you need them, ask to set ${params.runtimeChannel}.capabilities.inlineButtons ("dm"|"group"|"all"|"allowlist").`
-              : "",
-          ...(params.messageToolHints ?? []),
+          "- Cross-session messaging → use sessions_send(sessionKey, message)",
+          "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
+          "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
+          params.hasMessageTool
+            ? [
+                "",
+                "### message tool",
+                "- Use `message` for proactive sends + channel actions (polls, reactions, etc.).",
+                "- For `action=send`, include `to` and `message`.",
+                `- If multiple channels are configured, pass \`channel\` (${params.messageChannelOptions}).`,
+                `- If you use \`message\` (\`action=send\`) to deliver your user-visible reply, respond with ONLY: ${SILENT_REPLY_TOKEN} (avoid duplicate replies).`,
+                params.inlineButtonsEnabled
+                  ? "- Inline buttons supported. Use `action=send` with `buttons=[[{text,callback_data,style?}]]`; `style` can be `primary`, `success`, or `danger`."
+                  : params.runtimeChannel
+                    ? `- Inline buttons not enabled for ${params.runtimeChannel}. If you need them, ask to set ${params.runtimeChannel}.capabilities.inlineButtons ("dm"|"group"|"all"|"allowlist").`
+                    : "",
+                ...(params.messageToolHints ?? []),
+              ]
+                .filter(Boolean)
+                .join("\n")
+            : "",
         ]
-          .filter(Boolean)
-          .join("\n")
-      : "",
+      : []),
     "",
   ];
 }
@@ -158,7 +163,6 @@ function buildVoiceSection(params: { isMinimal: boolean; ttsHint?: string }) {
 function buildDocsSection(params: {
   docsPath?: string;
   isMinimal: boolean;
-  readToolName: string;
   hasReadTool: boolean;
   hasExecTool: boolean;
 }) {
@@ -356,10 +360,14 @@ export function buildAgentSystemPrompt(params: {
   // When toolNames is omitted, preserve the legacy fallback guidance for default/full prompts.
   const hasExplicitToolList = params.toolNames !== undefined;
   const hasExplicitEmptyToolList = hasExplicitToolList && toolLines.length === 0;
+  const hasImplicitDefaultTools = params.toolNames === undefined;
   const hasAvailableTools = toolLines.length > 0;
-  const hasGateway = availableTools.has("gateway");
+  const hasGateway = hasImplicitDefaultTools || availableTools.has("gateway");
+  const hasReadTool = hasImplicitDefaultTools || availableTools.has("read");
+  const hasExecTool = hasImplicitDefaultTools || availableTools.has("exec");
+  const hasSessionStatusTool = hasImplicitDefaultTools || availableTools.has("session_status");
   const hasWorkspaceToolAccess =
-    params.toolNames === undefined ||
+    hasImplicitDefaultTools ||
     ["read", "write", "edit", "apply_patch", "exec", "grep", "find", "ls"].some((tool) =>
       availableTools.has(tool),
     );
@@ -426,18 +434,21 @@ export function buildAgentSystemPrompt(params: {
         skillsPrompt,
         readToolName,
       });
-  const memorySection = buildMemorySection({
-    isMinimal,
-    availableTools,
-    citationsMode: params.memoryCitationsMode,
-  });
-  const docsSection = buildDocsSection({
-    docsPath: params.docsPath,
-    isMinimal,
-    readToolName,
-    hasReadTool: availableTools.has("read"),
-    hasExecTool: availableTools.has("exec"),
-  });
+  const memorySection = hasExplicitEmptyToolList
+    ? []
+    : buildMemorySection({
+        isMinimal,
+        availableTools,
+        citationsMode: params.memoryCitationsMode,
+      });
+  const docsSection = hasExplicitEmptyToolList
+    ? []
+    : buildDocsSection({
+        docsPath: params.docsPath,
+        isMinimal,
+        hasReadTool,
+        hasExecTool,
+      });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
   // For "none" mode, return just the basic identity line
@@ -495,14 +506,14 @@ export function buildAgentSystemPrompt(params: {
           "Do not poll `subagents list` / `sessions_list` in a loop; only check status on-demand (for intervention, debugging, or when explicitly asked).",
         ]),
     "",
-    "## Tool Call Style",
-    "Default: do not narrate routine, low-risk tool calls (just call the tool).",
-    "Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",
-    "Keep narration brief and value-dense; avoid repeating obvious steps.",
-    "Use plain human language for narration unless in a technical context.",
     ...(hasExplicitEmptyToolList
       ? []
       : [
+          "## Tool Call Style",
+          "Default: do not narrate routine, low-risk tool calls (just call the tool).",
+          "Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",
+          "Keep narration brief and value-dense; avoid repeating obvious steps.",
+          "Use plain human language for narration unless in a technical context.",
           "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
           buildExecApprovalPromptGuidance({
             runtimeChannel: params.runtimeInfo?.channel,
@@ -510,8 +521,8 @@ export function buildAgentSystemPrompt(params: {
           "Never execute /approve through exec or any other shell/tool path; /approve is a user-facing approval command, not a shell command.",
           "Treat allow-once as single-command only: if another elevated command needs approval, request a fresh /approve and do not claim prior approval covered it.",
           "When approvals are required, preserve and show the full command/script exactly as provided (including chained operators like &&, ||, |, ;, or multiline shells) so the user can approve what will actually run.",
+          "",
         ]),
-    "",
     ...safetySection,
     ...(hasGateway && !isMinimal
       ? [
@@ -552,7 +563,7 @@ export function buildAgentSystemPrompt(params: {
       ? params.modelAliasLines.join("\n")
       : "",
     params.modelAliasLines && params.modelAliasLines.length > 0 && !isMinimal ? "" : "",
-    userTimezone && availableTools.has("session_status")
+    userTimezone && hasSessionStatusTool
       ? "If you need the current date, time, or day of week, run session_status (📊 session_status)."
       : "",
     ...(hasWorkspaceToolAccess
@@ -628,13 +639,14 @@ export function buildAgentSystemPrompt(params: {
     ...buildReplyTagsSection(isMinimal),
     ...buildMessagingSection({
       isMinimal,
-      availableTools,
+      includeToolOnlyGuidance: !hasExplicitEmptyToolList,
+      hasMessageTool: availableTools.has("message"),
       messageChannelOptions,
       inlineButtonsEnabled,
       runtimeChannel,
       messageToolHints: params.messageToolHints,
     }),
-    ...buildVoiceSection({ isMinimal, ttsHint: params.ttsHint }),
+    ...(hasExplicitEmptyToolList ? [] : buildVoiceSection({ isMinimal, ttsHint: params.ttsHint })),
   ];
 
   if (extraSystemPrompt) {

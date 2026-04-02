@@ -346,6 +346,24 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("A workspace path is provided for context only.");
   });
 
+  it("removes remaining tool and subagent prompt pollution for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      userTimezone: "America/Chicago",
+      docsPath: "/tmp/openclaw/docs",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+    });
+
+    expect(prompt).not.toContain("## Tool Call Style");
+    expect(prompt).not.toContain("sessions_send(sessionKey, message)");
+    expect(prompt).not.toContain("subagents(action=list|steer|kill)");
+    expect(prompt).not.toContain("Never use exec/curl for provider messaging");
+    expect(prompt).not.toContain("When a first-class tool exists for an action");
+    expect(prompt).not.toContain("When exec returns approval-pending");
+  });
+
   it("documents ACP sessions_spawn agent targeting requirements", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -437,18 +455,56 @@ describe("buildAgentSystemPrompt", () => {
     );
   });
 
-  it("includes docs guidance when docsPath is provided and read access exists", () => {
-    const prompt = buildAgentSystemPrompt({
-      workspaceDir: "/tmp/openclaw",
-      docsPath: "/tmp/openclaw/docs",
-      toolNames: ["read", "exec"],
-    });
+  it.each([
+    {
+      name: "legacy omitted-tool fallback",
+      params: {
+        workspaceDir: "/tmp/openclaw",
+        docsPath: "/tmp/openclaw/docs",
+        userTimezone: "America/Chicago",
+      },
+    },
+    {
+      name: "explicit read/exec access",
+      params: {
+        workspaceDir: "/tmp/openclaw",
+        docsPath: "/tmp/openclaw/docs",
+        userTimezone: "America/Chicago",
+        toolNames: ["read", "exec", "session_status"],
+      },
+    },
+  ])("keeps docs and time guidance available for $name", ({ params }) => {
+    const prompt = buildAgentSystemPrompt(params);
 
     expect(prompt).toContain("## Documentation");
     expect(prompt).toContain("OpenClaw docs: /tmp/openclaw/docs");
+    expect(prompt).toContain("Find new skills: https://clawhub.ai");
     expect(prompt).toContain(
       "For OpenClaw behavior, commands, config, or architecture: consult local docs first.",
     );
+    expect(prompt).toContain(
+      "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+    );
+    expect(prompt).toContain(
+      "If you need the current date, time, or day of week, run session_status (📊 session_status).",
+    );
+  });
+
+  it("preserves legacy fallback guidance when toolNames is omitted", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      docsPath: "/tmp/openclaw/docs",
+      userTimezone: "America/Chicago",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+    });
+
+    expect(prompt).toContain("## OpenClaw CLI Quick Reference");
+    expect(prompt).toContain("Find new skills: https://clawhub.ai");
+    expect(prompt).toContain(
+      "If you need the current date, time, or day of week, run session_status (📊 session_status).",
+    );
+    expect(prompt).toContain("## Skills (mandatory)");
   });
 
   it("includes workspace notes when provided", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemPromptReport } from "./system-prompt-report.js";
+import { buildAgentSystemPrompt } from "./system-prompt.js";
 import type { WorkspaceBootstrapFile } from "./workspace.js";
 
 function makeBootstrapFile(overrides: Partial<WorkspaceBootstrapFile>): WorkspaceBootstrapFile {
@@ -111,5 +112,25 @@ describe("buildSystemPromptReport", () => {
     });
 
     expect(report.injectedWorkspaceFiles[0]?.injectedChars).toBe("trimmed".length);
+  });
+
+  it("reports zero tool-list chars for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+    });
+    const report = buildSystemPromptReport({
+      source: "run",
+      generatedAt: 0,
+      bootstrapMaxChars: 20_000,
+      systemPrompt: prompt,
+      bootstrapFiles: [],
+      injectedFiles: [],
+      skillsPrompt: "",
+      tools: [],
+    });
+
+    expect(report.tools.entries).toEqual([]);
+    expect(report.tools.listChars).toBe(0);
   });
 });

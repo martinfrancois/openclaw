@@ -160,7 +160,12 @@ function buildVoiceSection(params: { isMinimal: boolean; ttsHint?: string }) {
   return ["## Voice (TTS)", hint, ""];
 }
 
-function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readToolName: string }) {
+function buildDocsSection(params: {
+  docsPath?: string;
+  isMinimal: boolean;
+  hasReadTool: boolean;
+  hasExecTool: boolean;
+}) {
   const docsPath = params.docsPath?.trim();
   if (!docsPath || params.isMinimal) {
     return [];
@@ -171,9 +176,15 @@ function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readT
     "Mirror: https://docs.openclaw.ai",
     "Source: https://github.com/openclaw/openclaw",
     "Community: https://discord.com/invite/clawd",
-    "Find new skills: https://clawhub.ai",
-    "For OpenClaw behavior, commands, config, or architecture: consult local docs first.",
-    "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+    ...(params.hasReadTool ? ["Find new skills: https://clawhub.ai"] : []),
+    ...(params.hasReadTool
+      ? ["For OpenClaw behavior, commands, config, or architecture: consult local docs first."]
+      : []),
+    ...(params.hasExecTool
+      ? [
+          "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+        ]
+      : []),
     "",
   ];
 }
@@ -349,8 +360,17 @@ export function buildAgentSystemPrompt(params: {
   // When toolNames is omitted, preserve the legacy fallback guidance for default/full prompts.
   const hasExplicitToolList = params.toolNames !== undefined;
   const hasExplicitEmptyToolList = hasExplicitToolList && toolLines.length === 0;
+  const hasImplicitDefaultTools = params.toolNames === undefined;
   const hasAvailableTools = toolLines.length > 0;
-  const hasGateway = availableTools.has("gateway");
+  const hasGateway = hasImplicitDefaultTools || availableTools.has("gateway");
+  const hasReadTool = hasImplicitDefaultTools || availableTools.has("read");
+  const hasExecTool = hasImplicitDefaultTools || availableTools.has("exec");
+  const hasSessionStatusTool = hasImplicitDefaultTools || availableTools.has("session_status");
+  const hasWorkspaceToolAccess =
+    hasImplicitDefaultTools ||
+    ["read", "write", "edit", "apply_patch", "exec", "grep", "find", "ls"].some((tool) =>
+      availableTools.has(tool),
+    );
   const readToolName = resolveToolName("read");
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
@@ -396,11 +416,11 @@ export function buildAgentSystemPrompt(params: {
     params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
       ? sanitizedSandboxContainerWorkspace
       : sanitizedWorkspaceDir;
-  const workspaceGuidance = hasExplicitEmptyToolList
-    ? "A workspace path is provided for context only. Do not claim you can inspect, edit, or execute inside it unless the session policy changes."
-    : params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
+  const workspaceGuidance = hasWorkspaceToolAccess
+    ? params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
       ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. For bash/exec commands, use sandbox container paths under ${sanitizedSandboxContainerWorkspace} (or relative paths from that workdir), not host paths. Prefer relative paths so both sandboxed exec and file tools work consistently.`
-      : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.";
+      : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise."
+    : "A workspace path is provided for context only. Do not claim you can inspect, edit, or execute inside it unless the session policy changes.";
   const safetySection = [
     "## Safety",
     "You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.",
@@ -426,7 +446,8 @@ export function buildAgentSystemPrompt(params: {
     : buildDocsSection({
         docsPath: params.docsPath,
         isMinimal,
-        readToolName,
+        hasReadTool,
+        hasExecTool,
       });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
@@ -507,9 +528,8 @@ export function buildAgentSystemPrompt(params: {
           "",
         ]),
     ...safetySection,
-    ...(hasExplicitEmptyToolList
-      ? []
-      : [
+    ...(hasGateway && !isMinimal
+      ? [
           "## OpenClaw CLI Quick Reference",
           "OpenClaw is controlled via subcommands. Do not invent commands.",
           "To manage the Gateway daemon service (start/stop/restart):",
@@ -519,7 +539,8 @@ export function buildAgentSystemPrompt(params: {
           "- openclaw gateway restart",
           "If unsure, ask the user to run `openclaw help` (or `openclaw gateway --help`) and paste the output.",
           "",
-        ]),
+        ]
+      : []),
     ...skillsSection,
     ...memorySection,
     // Skip self-update for subagent/none modes
@@ -546,14 +567,23 @@ export function buildAgentSystemPrompt(params: {
       ? params.modelAliasLines.join("\n")
       : "",
     params.modelAliasLines && params.modelAliasLines.length > 0 && !isMinimal ? "" : "",
-    userTimezone && !hasExplicitEmptyToolList
+    userTimezone && hasSessionStatusTool
       ? "If you need the current date, time, or day of week, run session_status (📊 session_status)."
       : "",
-    "## Workspace",
-    `Your working directory is: ${displayWorkspaceDir}`,
-    workspaceGuidance,
-    ...workspaceNotes,
-    "",
+    ...(hasWorkspaceToolAccess
+      ? [
+          "## Workspace",
+          `Your working directory is: ${displayWorkspaceDir}`,
+          workspaceGuidance,
+          ...workspaceNotes,
+          "",
+        ]
+      : [
+          "## Workspace",
+          `Your working directory is: ${displayWorkspaceDir}`,
+          workspaceGuidance,
+          "",
+        ]),
     ...docsSection,
     ...(params.sandboxInfo?.enabled && !hasExplicitEmptyToolList
       ? [
@@ -622,7 +652,7 @@ export function buildAgentSystemPrompt(params: {
       runtimeChannel,
       messageToolHints: params.messageToolHints,
     }),
-    ...buildVoiceSection({ isMinimal, ttsHint: params.ttsHint }),
+    ...(hasExplicitEmptyToolList ? [] : buildVoiceSection({ isMinimal, ttsHint: params.ttsHint })),
   ];
 
   if (extraSystemPrompt) {

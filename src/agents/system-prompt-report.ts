@@ -77,6 +77,41 @@ function extractToolListText(systemPrompt: string): string {
   return extracted.text.replace(markerA, "").trim();
 }
 
+const SKILLS_SECTION_HEADING = "## Skills (mandatory)\n";
+const SKILLS_SECTION_INTRO =
+  "Use the read tool to load a skill's file when the task matches its description.";
+
+function extractSkillsSectionTexts(systemPrompt: string): string[] {
+  const sections: string[] = [];
+  let searchFrom = 0;
+  while (true) {
+    const start = systemPrompt.indexOf(SKILLS_SECTION_HEADING, searchFrom);
+    if (start === -1) {
+      return sections;
+    }
+    const sectionStart = start + SKILLS_SECTION_HEADING.length;
+    const nextHeading = systemPrompt.indexOf("\n## ", sectionStart);
+    sections.push(systemPrompt.slice(sectionStart, nextHeading === -1 ? undefined : nextHeading).trim());
+    searchFrom = sectionStart;
+  }
+}
+
+function extractSkillsPromptText(systemPrompt: string, rawSkillsPrompt: string): string {
+  const normalizedSkillsPrompt = rawSkillsPrompt.trim();
+  if (!normalizedSkillsPrompt) {
+    return "";
+  }
+  for (const skillsSectionText of extractSkillsSectionTexts(systemPrompt)) {
+    if (
+      skillsSectionText.includes(SKILLS_SECTION_INTRO) &&
+      skillsSectionText.includes(normalizedSkillsPrompt)
+    ) {
+      return normalizedSkillsPrompt;
+    }
+  }
+  return "";
+}
+
 export function buildSystemPromptReport(params: {
   source: SessionSystemPromptReport["source"];
   generatedAt: number;
@@ -106,7 +141,8 @@ export function buildSystemPromptReport(params: {
   const toolListChars = toolListText.length;
   const toolsEntries = buildToolsEntries(params.tools);
   const toolsSchemaChars = toolsEntries.reduce((sum, t) => sum + (t.schemaChars ?? 0), 0);
-  const skillsEntries = parseSkillBlocks(params.skillsPrompt);
+  const renderedSkillsPrompt = extractSkillsPromptText(systemPrompt, params.skillsPrompt);
+  const skillsEntries = parseSkillBlocks(renderedSkillsPrompt);
 
   return {
     source: params.source,
@@ -130,7 +166,7 @@ export function buildSystemPromptReport(params: {
       injectedFiles: params.injectedFiles,
     }),
     skills: {
-      promptChars: params.skillsPrompt.length,
+      promptChars: renderedSkillsPrompt.length,
       entries: skillsEntries,
     },
     tools: {

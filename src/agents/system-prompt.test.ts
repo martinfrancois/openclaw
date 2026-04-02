@@ -318,6 +318,9 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("No tools are available in this session.");
     expect(prompt).not.toContain("Tool names are case-sensitive. Call tools exactly as listed.");
     expect(prompt).not.toContain("Pi lists the standard tools above. This runtime enables:");
+    expect(prompt).not.toContain(
+      "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
+    );
     expect(prompt).not.toContain("For long waits, avoid rapid poll loops:");
     expect(prompt).not.toContain("If a task is more complex or takes longer, spawn a sub-agent.");
     expect(prompt).not.toContain("When exec returns approval-pending");
@@ -362,6 +365,29 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).not.toContain("Never use exec/curl for provider messaging");
     expect(prompt).not.toContain("When a first-class tool exists for an action");
     expect(prompt).not.toContain("When exec returns approval-pending");
+  });
+
+  it("omits the sandbox section for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      sandboxInfo: {
+        enabled: true,
+        workspaceDir: "/tmp/openclaw",
+        containerWorkspaceDir: "/workspace",
+        workspaceAccess: "rw",
+        agentWorkspaceMount: "/agent",
+        elevated: { allowed: true, defaultLevel: "ask" },
+      },
+    });
+
+    expect(prompt).not.toContain("## Sandbox");
+    expect(prompt).not.toContain("You are running in a sandboxed runtime");
+    expect(prompt).not.toContain("Elevated exec is available for this session.");
+    expect(prompt).not.toContain("User can toggle with /elevated on|off|ask|full.");
+    expect(prompt).not.toContain("ACP harness spawns are blocked from sandboxed sessions");
+    expect(prompt).not.toContain("Sandbox container workdir:");
+    expect(prompt).not.toContain("Sandbox host mount source");
   });
 
   it("documents ACP sessions_spawn agent targeting requirements", () => {

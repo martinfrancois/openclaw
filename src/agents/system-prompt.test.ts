@@ -349,6 +349,21 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("A workspace path is provided for context only.");
   });
 
+  it("preserves workspace notes and voice hints for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      workspaceNotes: ["note one"],
+      ttsHint: "Speak naturally.",
+    });
+
+    expect(prompt).toContain("A workspace path is provided for context only.");
+    expect(prompt).toContain("note one");
+    expect(prompt).toContain("## Voice (TTS)");
+    expect(prompt).toContain("Speak naturally.");
+    expect(prompt).not.toContain("## Tool Call Style");
+  });
+
   it("removes remaining tool and subagent prompt pollution for explicit empty-tool sessions", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -491,12 +506,12 @@ describe("buildAgentSystemPrompt", () => {
       },
     },
     {
-      name: "explicit read/exec access",
+      name: "explicit read-only filtered tools",
       params: {
         workspaceDir: "/tmp/openclaw",
         docsPath: "/tmp/openclaw/docs",
         userTimezone: "America/Chicago",
-        toolNames: ["read", "exec", "session_status"],
+        toolNames: ["read"],
       },
     },
   ])("keeps docs and time guidance available for $name", ({ params }) => {
@@ -531,6 +546,28 @@ describe("buildAgentSystemPrompt", () => {
       "If you need the current date, time, or day of week, run session_status (📊 session_status).",
     );
     expect(prompt).toContain("## Skills (mandatory)");
+    expect(prompt).not.toContain("## OpenClaw Self-Update");
+  });
+
+  it("preserves upstream-style behavior for explicit non-empty filtered tool lists", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["read"],
+      docsPath: "/tmp/openclaw/docs",
+      userTimezone: "America/Chicago",
+      workspaceNotes: ["note one"],
+    });
+
+    expect(prompt).toContain("## OpenClaw CLI Quick Reference");
+    expect(prompt).toContain(
+      "If you need the current date, time, or day of week, run session_status (📊 session_status).",
+    );
+    expect(prompt).toContain("## Documentation");
+    expect(prompt).toContain(
+      "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.",
+    );
+    expect(prompt).toContain("note one");
+    expect(prompt).not.toContain("## OpenClaw Self-Update");
   });
 
   it("includes workspace notes when provided", () => {

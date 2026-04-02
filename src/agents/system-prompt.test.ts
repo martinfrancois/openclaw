@@ -437,17 +437,38 @@ describe("buildAgentSystemPrompt", () => {
     );
   });
 
-  it("includes docs guidance when docsPath is provided and read access exists", () => {
-    const prompt = buildAgentSystemPrompt({
-      workspaceDir: "/tmp/openclaw",
-      docsPath: "/tmp/openclaw/docs",
-      toolNames: ["read", "exec"],
-    });
+  it.each([
+    {
+      name: "legacy fallback tool prompts",
+      params: {
+        workspaceDir: "/tmp/openclaw",
+        docsPath: "/tmp/openclaw/docs",
+        userTimezone: "America/Chicago",
+      },
+    },
+    {
+      name: "explicit read/exec access",
+      params: {
+        workspaceDir: "/tmp/openclaw",
+        docsPath: "/tmp/openclaw/docs",
+        userTimezone: "America/Chicago",
+        toolNames: ["read", "exec", "session_status"],
+      },
+    },
+  ])("keeps docs and time guidance available for $name", ({ params }) => {
+    const prompt = buildAgentSystemPrompt(params);
 
     expect(prompt).toContain("## Documentation");
     expect(prompt).toContain("OpenClaw docs: /tmp/openclaw/docs");
+    expect(prompt).toContain("Find new skills: https://clawhub.ai");
     expect(prompt).toContain(
       "For OpenClaw behavior, commands, config, or architecture: consult local docs first.",
+    );
+    expect(prompt).toContain(
+      "When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).",
+    );
+    expect(prompt).toContain(
+      "If you need the current date, time, or day of week, run session_status (📊 session_status).",
     );
   });
 

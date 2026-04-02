@@ -158,7 +158,6 @@ function buildVoiceSection(params: { isMinimal: boolean; ttsHint?: string }) {
 function buildDocsSection(params: {
   docsPath?: string;
   isMinimal: boolean;
-  readToolName: string;
   hasReadTool: boolean;
   hasExecTool: boolean;
 }) {
@@ -358,9 +357,14 @@ export function buildAgentSystemPrompt(params: {
   const hasExplicitEmptyToolList = hasExplicitToolList && toolLines.length === 0;
   const hasAvailableTools = toolLines.length > 0;
   const hasGateway = availableTools.has("gateway");
+  const usesLegacyToolFallback = params.toolNames === undefined;
+  const hasReadTool = usesLegacyToolFallback || availableTools.has("read");
+  const hasExecTool =
+    usesLegacyToolFallback || availableTools.has("exec") || availableTools.has("bash");
+  const hasSessionStatusTool = usesLegacyToolFallback || availableTools.has("session_status");
   const hasWorkspaceToolAccess =
-    params.toolNames === undefined ||
-    ["read", "write", "edit", "apply_patch", "exec", "grep", "find", "ls"].some((tool) =>
+    usesLegacyToolFallback ||
+    ["read", "write", "edit", "apply_patch", "exec", "bash", "grep", "find", "ls"].some((tool) =>
       availableTools.has(tool),
     );
   const readToolName = resolveToolName("read");
@@ -434,9 +438,8 @@ export function buildAgentSystemPrompt(params: {
   const docsSection = buildDocsSection({
     docsPath: params.docsPath,
     isMinimal,
-    readToolName,
-    hasReadTool: availableTools.has("read"),
-    hasExecTool: availableTools.has("exec"),
+    hasReadTool,
+    hasExecTool,
   });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
@@ -552,7 +555,7 @@ export function buildAgentSystemPrompt(params: {
       ? params.modelAliasLines.join("\n")
       : "",
     params.modelAliasLines && params.modelAliasLines.length > 0 && !isMinimal ? "" : "",
-    userTimezone && availableTools.has("session_status")
+    userTimezone && hasSessionStatusTool
       ? "If you need the current date, time, or day of week, run session_status (📊 session_status)."
       : "",
     ...(hasWorkspaceToolAccess

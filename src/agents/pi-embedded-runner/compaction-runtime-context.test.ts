@@ -20,6 +20,16 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
         workspaceDir: "/tmp/workspace",
         agentDir: "/tmp/agent",
         config: {} as OpenClawConfig,
+        clientTools: [
+          {
+            type: "function",
+            function: {
+              name: "get_weather",
+              description: "Fetch weather",
+              parameters: { type: "object" },
+            },
+          },
+        ],
         senderIsOwner: true,
         senderId: "user-123",
         provider: "openai-codex",
@@ -40,6 +50,16 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
       authProfileId: "openai:p1",
       workspaceDir: "/tmp/workspace",
       agentDir: "/tmp/agent",
+      clientTools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Fetch weather",
+            parameters: { type: "object" },
+          },
+        },
+      ],
       senderId: "user-123",
       provider: "openai-codex",
       model: "gpt-5.4",

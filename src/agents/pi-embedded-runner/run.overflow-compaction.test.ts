@@ -81,6 +81,36 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
     );
   });
 
+  it("passes semantic client-tool aliases into the primary embedded attempt", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    await runEmbeddedPiAgent({
+      ...overflowBaseRunParams,
+      runId: "run-client-tool-semantic-aliases",
+      clientTools: [
+        {
+          type: "function",
+          function: {
+            name: "file_read",
+            description: "Read a file",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      clientToolSemanticAliases: {
+        file_read: "read",
+      },
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientToolSemanticAliases: {
+          file_read: "read",
+        },
+      }),
+    );
+  });
+
   it("blocks undersized models before dispatching a provider attempt", async () => {
     mockedResolveContextWindowInfo.mockReturnValue({
       tokens: 800,

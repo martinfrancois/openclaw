@@ -79,6 +79,19 @@ If multiple tool calls are needed, call them in sequence without stopping to exp
 Default: do not narrate routine, low-risk tool calls (just call the tool).
 Narrate only when it genuinely helps: complex multi-step work, sensitive actions like deletions, or when the user explicitly asks for commentary.`;
 
+export const OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS = OPENAI_FRIENDLY_PROMPT_OVERLAY.replace(
+  "Prefer the first real tool step over more narration.",
+  "Prefer the first real step over more narration.",
+)
+  .replace(
+    "Use your existing tools and capabilities, orient yourself, and be proactive. Think big picture.",
+    "Use your existing context and judgment, orient yourself, and be proactive. Think big picture.",
+  )
+  .replace(
+    "If HEARTBEAT.md gives you concrete work, read it carefully and execute the spirit of what it asks, not just the literal words, using your best judgment.",
+    "If HEARTBEAT.md gives you concrete work, follow it carefully and execute the spirit of what it asks, not just the literal words, using your best judgment.",
+  );
+
 export type OpenAIPromptOverlayMode = "friendly" | "off";
 
 export function resolveOpenAIPromptOverlayMode(
@@ -103,6 +116,7 @@ export function resolveOpenAISystemPromptContribution(params: {
   mode: OpenAIPromptOverlayMode;
   modelProviderId?: string;
   modelId?: string;
+  toolNames?: string[];
 }) {
   if (
     !shouldApplyOpenAIPromptOverlay({
@@ -118,11 +132,18 @@ export function resolveOpenAISystemPromptContribution(params: {
   // channel. Overriding it with a static string would lose that dynamic
   // content. Instead, the tool-first reinforcement lives in stablePrefix
   // so it's always present alongside the default tool_call_style section.
+  const hasExplicitEmptyToolList = Array.isArray(params.toolNames) && params.toolNames.length === 0;
   return {
     stablePrefix: [OPENAI_GPT5_OUTPUT_CONTRACT, OPENAI_GPT5_TOOL_CALL_STYLE].join("\n\n"),
     sectionOverrides: {
       execution_bias: OPENAI_GPT5_EXECUTION_BIAS,
-      ...(params.mode === "friendly" ? { interaction_style: OPENAI_FRIENDLY_PROMPT_OVERLAY } : {}),
+      ...(params.mode === "friendly"
+        ? {
+            interaction_style: hasExplicitEmptyToolList
+              ? OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS
+              : OPENAI_FRIENDLY_PROMPT_OVERLAY,
+          }
+        : {}),
     },
   };
 }

@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CommandQueueEnqueueFn } from "../../process/command-queue.types.js";
 import type { ExecElevatedDefaults } from "../bash-tools.exec-types.js";
 import type { SkillSnapshot } from "../skills.js";
+import type { ClientToolDefinition } from "./run/params.js";
 
 export type CompactEmbeddedPiSessionParams = {
   sessionId: string;
@@ -37,6 +38,8 @@ export type CompactEmbeddedPiSessionParams = {
   agentDir?: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;
+  clientTools?: ClientToolDefinition[];
+  clientToolSemanticAliases?: Record<string, string>;
   provider?: string;
   model?: string;
   thinkLevel?: ThinkLevel;

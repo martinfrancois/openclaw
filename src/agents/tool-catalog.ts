@@ -36,6 +36,18 @@ type CoreToolDefinition = {
   includeInOpenClawGroup?: boolean;
 };
 
+export const CLI_NATIVE_PROMPT_TOOL_NAMES = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "grep",
+  "find",
+  "ls",
+  "exec",
+  "process",
+] as const;
+
 const CORE_TOOL_SECTION_ORDER: Array<{ id: string; label: string }> = [
   { id: "fs", label: "Files" },
   { id: "runtime", label: "Runtime" },
@@ -344,6 +356,15 @@ function buildCoreToolGroupMap() {
 }
 
 export const CORE_TOOL_GROUPS = buildCoreToolGroupMap();
+
+const cliNativePromptToolNameSet: ReadonlySet<string> = new Set(CLI_NATIVE_PROMPT_TOOL_NAMES);
+
+export const CLI_BUNDLED_PROMPT_TOOL_NAMES = [
+  ...CLI_NATIVE_PROMPT_TOOL_NAMES,
+  ...(CORE_TOOL_GROUPS["group:openclaw"] ?? []).filter(
+    (name) => !cliNativePromptToolNameSet.has(name),
+  ),
+] as const;
 
 export const PROFILE_OPTIONS = [
   { id: "minimal", label: "Minimal" },

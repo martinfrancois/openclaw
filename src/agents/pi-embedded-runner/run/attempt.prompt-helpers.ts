@@ -213,6 +213,8 @@ export function buildAfterTurnRuntimeContext(params: {
     | "currentMessageId"
     | "config"
     | "skillsSnapshot"
+    | "clientTools"
+    | "clientToolSemanticAliases"
     | "senderIsOwner"
     | "senderId"
     | "provider"
@@ -242,6 +244,8 @@ export function buildAfterTurnRuntimeContext(params: {
       agentDir: params.agentDir,
       config: params.attempt.config,
       skillsSnapshot: params.attempt.skillsSnapshot,
+      clientTools: params.attempt.clientTools,
+      clientToolSemanticAliases: params.attempt.clientToolSemanticAliases,
       senderIsOwner: params.attempt.senderIsOwner,
       senderId: params.attempt.senderId,
       provider: params.attempt.provider,

@@ -2,6 +2,7 @@ import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import type { SkillSnapshot } from "../skills.js";
+import type { ClientToolDefinition } from "./run/params.js";
 
 export type EmbeddedCompactionRuntimeContext = {
   sessionKey?: string;
@@ -16,6 +17,8 @@ export type EmbeddedCompactionRuntimeContext = {
   agentDir: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;
+  clientTools?: ClientToolDefinition[];
+  clientToolSemanticAliases?: Record<string, string>;
   senderIsOwner?: boolean;
   senderId?: string;
   provider?: string;
@@ -81,6 +84,8 @@ export function buildEmbeddedCompactionRuntimeContext(params: {
   agentDir: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;
+  clientTools?: ClientToolDefinition[];
+  clientToolSemanticAliases?: Record<string, string>;
   senderIsOwner?: boolean;
   senderId?: string | null;
   provider?: string | null;
@@ -110,6 +115,8 @@ export function buildEmbeddedCompactionRuntimeContext(params: {
     agentDir: params.agentDir,
     config: params.config,
     skillsSnapshot: params.skillsSnapshot,
+    clientTools: params.clientTools,
+    clientToolSemanticAliases: params.clientToolSemanticAliases,
     senderIsOwner: params.senderIsOwner,
     senderId: params.senderId ?? undefined,
     provider: resolved.provider,

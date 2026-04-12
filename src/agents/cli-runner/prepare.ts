@@ -1,8 +1,12 @@
 import { ensureMcpLoopbackServer } from "../../gateway/mcp-http.js";
+import { resolveAgentMainSessionKey, resolveMainSessionKey } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   createMcpLoopbackServerConfig,
   getActiveMcpLoopbackRuntime,
 } from "../../gateway/mcp-http.loopback-runtime.js";
+import { resolveGatewayScopedTools } from "../../gateway/tool-resolution.js";
+import { normalizeMainKey } from "../../routing/session-key.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import {
   buildBootstrapInjectionStats,
@@ -27,9 +31,15 @@ import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import { resolveSkillsPromptForRun } from "../skills.js";
 import { resolveSystemPromptOverride } from "../system-prompt-override.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
+import { CLI_BUNDLED_PROMPT_TOOL_NAMES, CLI_NATIVE_PROMPT_TOOL_NAMES } from "../tool-catalog.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { prepareCliBundleMcpConfig } from "./bundle-mcp.js";
-import { buildSystemPrompt, normalizeCliModel } from "./helpers.js";
+import {
+  buildCliSystemPromptReportToolsFromPrompt,
+  buildSystemPrompt,
+  normalizeCliModel,
+  resolveCliSystemPromptToolNames,
+} from "./helpers.js";
 import { cliBackendLog } from "./log.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./types.js";
 
@@ -39,6 +49,7 @@ const prepareDeps = {
   getActiveMcpLoopbackRuntime,
   ensureMcpLoopbackServer,
   createMcpLoopbackServerConfig,
+  resolveGatewayScopedTools,
   resolveOpenClawDocsPath: async (
     params: Parameters<typeof import("../docs-path.js").resolveOpenClawDocsPath>[0],
   ) => (await import("../docs-path.js")).resolveOpenClawDocsPath(params),
@@ -46,6 +57,78 @@ const prepareDeps = {
 
 export function setCliRunnerPrepareTestDeps(overrides: Partial<typeof prepareDeps>): void {
   Object.assign(prepareDeps, overrides);
+}
+
+function resolveCliLoopbackSessionKey(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  agentId?: string;
+}): string | undefined {
+  const explicitSessionKey = params.sessionKey?.trim();
+  if (explicitSessionKey) {
+    const normalizedExplicitSessionKey = normalizeMainKey(explicitSessionKey);
+    if (
+      params.config &&
+      (normalizedExplicitSessionKey === "main" ||
+        normalizedExplicitSessionKey === normalizeMainKey(params.config.session?.mainKey))
+    ) {
+      return resolveMainSessionKey(params.config);
+    }
+    return explicitSessionKey;
+  }
+  if (!params.config) {
+    return params.agentId
+      ? resolveAgentMainSessionKey({
+          cfg: params.config,
+          agentId: params.agentId,
+        })
+      : undefined;
+  }
+  return params.config.session?.scope === "global"
+    ? resolveMainSessionKey(params.config)
+    : params.agentId
+      ? resolveAgentMainSessionKey({
+          cfg: params.config,
+          agentId: params.agentId,
+        })
+      : resolveMainSessionKey(params.config);
+}
+
+function resolveCliPromptToolNames(params: {
+  config?: OpenClawConfig;
+  sessionKey?: string;
+  agentId?: string;
+  messageProvider?: string;
+  accountId?: string;
+  senderIsOwner?: boolean;
+  bundleMcp: boolean;
+  loopbackRuntimeActive: boolean;
+}): string[] {
+  if (!params.bundleMcp || !params.loopbackRuntimeActive) {
+    return [...CLI_NATIVE_PROMPT_TOOL_NAMES];
+  }
+  if (!params.config) {
+    return [...CLI_BUNDLED_PROMPT_TOOL_NAMES];
+  }
+  const sessionKey = resolveCliLoopbackSessionKey(params);
+  if (!sessionKey) {
+    return [...CLI_BUNDLED_PROMPT_TOOL_NAMES];
+  }
+  const loopbackToolNames = prepareDeps
+    .resolveGatewayScopedTools({
+      cfg: params.config,
+      sessionKey,
+      messageProvider: params.messageProvider,
+      accountId: params.accountId,
+      senderIsOwner: params.senderIsOwner,
+      surface: "loopback",
+      excludeToolNames: CLI_NATIVE_PROMPT_TOOL_NAMES,
+    })
+    .tools.map((tool) => tool.name);
+  return resolveCliSystemPromptToolNames({
+    tools: [],
+    fallbackToolNames: [...CLI_NATIVE_PROMPT_TOOL_NAMES, ...loopbackToolNames],
+  });
 }
 
 export async function prepareCliRunContext(
@@ -116,6 +199,11 @@ export async function prepareCliRunContext(
     config: params.config,
     agentId: params.agentId,
   });
+  const cliLoopbackSessionKey = resolveCliLoopbackSessionKey({
+    config: params.config,
+    sessionKey: params.sessionKey,
+    agentId: sessionAgentId,
+  });
   let mcpLoopbackRuntime = backendResolved.bundleMcp
     ? prepareDeps.getActiveMcpLoopbackRuntime()
     : undefined;
@@ -141,7 +229,7 @@ export async function prepareCliRunContext(
           OPENCLAW_MCP_TOKEN: mcpLoopbackRuntime.token,
           OPENCLAW_MCP_AGENT_ID: sessionAgentId ?? "",
           OPENCLAW_MCP_ACCOUNT_ID: params.agentAccountId ?? "",
-          OPENCLAW_MCP_SESSION_KEY: params.sessionKey ?? "",
+          OPENCLAW_MCP_SESSION_KEY: cliLoopbackSessionKey ?? "",
           OPENCLAW_MCP_MESSAGE_CHANNEL: params.messageProvider ?? "",
           OPENCLAW_MCP_SENDER_IS_OWNER: params.senderIsOwner === true ? "true" : "false",
         }
@@ -168,6 +256,16 @@ export async function prepareCliRunContext(
     config: params.config,
     agentId: sessionAgentId,
     defaultAgentId,
+  });
+  const promptToolNames = resolveCliPromptToolNames({
+    config: params.config,
+    sessionKey: params.sessionKey,
+    agentId: sessionAgentId,
+    messageProvider: params.messageProvider,
+    accountId: params.agentAccountId,
+    senderIsOwner: params.senderIsOwner,
+    bundleMcp: backendResolved.bundleMcp,
+    loopbackRuntimeActive: Boolean(mcpLoopbackRuntime),
   });
   const docsPath = await prepareDeps.resolveOpenClawDocsPath({
     workspaceDir,
@@ -196,6 +294,8 @@ export async function prepareCliRunContext(
       docsPath: docsPath ?? undefined,
       skillsPrompt,
       tools: [],
+      toolNames: promptToolNames,
+      bundleMcp: backendResolved.bundleMcp,
       contextFiles,
       modelDisplay,
       agentId: sessionAgentId,
@@ -214,6 +314,10 @@ export async function prepareCliRunContext(
     transformedSystemPrompt,
     backendResolved.textTransforms?.input,
   );
+  const { tools: reportTools, toolListPromptText } = buildCliSystemPromptReportToolsFromPrompt({
+    tools: [],
+    systemPrompt,
+  });
   const systemPromptReport = buildSystemPromptReport({
     source: "run",
     generatedAt: Date.now(),
@@ -234,7 +338,8 @@ export async function prepareCliRunContext(
     bootstrapFiles,
     injectedFiles: contextFiles,
     skillsPrompt,
-    tools: [],
+    tools: reportTools,
+    toolListPromptText,
   });
 
   return {

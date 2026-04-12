@@ -6,6 +6,7 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { MAX_IMAGE_BYTES } from "../media/constants.js";
 import {
   buildCliArgs,
+  buildCliSystemPromptReportToolsFromPrompt,
   loadPromptRefImages,
   prepareCliPromptImagePayload,
   resolveCliRunQueueKey,
@@ -181,6 +182,34 @@ describe("buildCliArgs", () => {
       "--model",
       "gemini-3.1-pro-preview",
     ]);
+  });
+});
+
+describe("buildCliSystemPromptReportToolsFromPrompt", () => {
+  it("parses dotted and hyphenated tool names from the rendered Tooling section", () => {
+    const result = buildCliSystemPromptReportToolsFromPrompt({
+      tools: [],
+      systemPrompt: [
+        "You are a personal assistant running inside OpenClaw.",
+        "",
+        "## Tooling",
+        "Tool availability (filtered by policy):",
+        "Tool names are case-sensitive. Call tools exactly as listed.",
+        "- mcp.weather-lookup: Fetch weather",
+        "- server.tool_name: Read from server",
+        "",
+        "## Tool Call Style",
+        "Default: do not narrate routine, low-risk tool calls (just call the tool).",
+      ].join("\n"),
+    });
+
+    expect(result.tools.map((tool) => tool.name)).toEqual([
+      "mcp.weather-lookup",
+      "server.tool_name",
+    ]);
+    expect(result.toolListPromptText).toBe(
+      "- mcp.weather-lookup: Fetch weather\n- server.tool_name: Read from server",
+    );
   });
 });
 

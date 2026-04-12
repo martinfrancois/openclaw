@@ -74,6 +74,11 @@ export type RunEmbeddedPiAgentParams = {
   imageOrder?: PromptImageOrderEntry[];
   /** Optional client-provided tools (OpenResponses hosted tools). */
   clientTools?: ClientToolDefinition[];
+  /**
+   * Trusted semantic mappings for hosted client tools.
+   * Key: advertised client tool name. Value: OpenClaw semantic tool id.
+   */
+  clientToolSemanticAliases?: Record<string, string>;
   /** Disable built-in tools for this run (LLM-only mode). */
   disableTools?: boolean;
   provider?: string;

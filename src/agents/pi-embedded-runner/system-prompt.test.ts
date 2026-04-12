@@ -95,6 +95,121 @@ describe("buildEmbeddedSystemPrompt", () => {
     expect(prompt).toContain("## Embedded Stable\n\nStable provider guidance.");
   });
 
+  it("treats hosted client tools as available when explicit tool names are provided", () => {
+    const prompt = buildEmbeddedSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      reasoningTagHint: false,
+      runtimeInfo: {
+        host: "local",
+        os: "darwin",
+        arch: "arm64",
+        node: process.version,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      tools: [],
+      toolNames: ["get_weather"],
+      modelAliasLines: [],
+      userTimezone: "UTC",
+    });
+
+    expect(prompt).not.toContain("No tools are available in this session.");
+    expect(prompt).toContain("- get_weather");
+  });
+
+  it("does not infer native prompt semantics from arbitrary hosted tool names", () => {
+    const prompt = buildEmbeddedSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      reasoningTagHint: false,
+      runtimeInfo: {
+        host: "local",
+        os: "darwin",
+        arch: "arm64",
+        node: process.version,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      tools: [],
+      toolNames: ["read", "exec", "session_status"],
+      nativeToolNames: [],
+      semanticToolNames: [],
+      modelAliasLines: [],
+      userTimezone: "UTC",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+      docsPath: "/tmp/openclaw/docs",
+    });
+
+    expect(prompt).toContain("- read");
+    expect(prompt).toContain("- exec");
+    expect(prompt).toContain("- session_status");
+    expect(prompt).not.toContain("read its SKILL.md");
+    expect(prompt).not.toContain("consult local docs first");
+    expect(prompt).not.toContain("Never execute /approve");
+    expect(prompt).not.toContain(
+      "If you need the current date, time, or day of week, run session_status",
+    );
+  });
+
+  it("preserves hosted semantic guidance when a client tool name intentionally matches it", () => {
+    const prompt = buildEmbeddedSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      reasoningTagHint: false,
+      runtimeInfo: {
+        host: "local",
+        os: "darwin",
+        arch: "arm64",
+        node: process.version,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      tools: [],
+      toolNames: ["message"],
+      nativeToolNames: [],
+      semanticToolNames: ["message"],
+      modelAliasLines: [],
+      userTimezone: "UTC",
+    });
+
+    expect(prompt).toContain("- message");
+    expect(prompt).toContain("### message tool");
+    expect(prompt).toContain("Never use exec/curl for provider messaging");
+    expect(prompt).not.toContain("Cross-session messaging");
+  });
+
+  it("renders semantic guidance with the advertised hosted alias name", () => {
+    const prompt = buildEmbeddedSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      reasoningTagHint: false,
+      runtimeInfo: {
+        host: "local",
+        os: "darwin",
+        arch: "arm64",
+        node: process.version,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      tools: [],
+      toolNames: ["file_read", "notify_user"],
+      nativeToolNames: [],
+      semanticToolNames: ["read", "message"],
+      semanticToolAliases: {
+        read: "file_read",
+        message: "notify_user",
+      },
+      modelAliasLines: [],
+      userTimezone: "UTC",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+      docsPath: "/tmp/openclaw/docs",
+    });
+
+    expect(prompt).toContain("with `file_read`");
+    expect(prompt).toContain("### notify_user tool");
+    expect(prompt).toContain("Use `notify_user` for proactive sends + channel actions");
+    expect(prompt).not.toContain("### message tool");
+  });
+
   it("can omit base memory guidance for non-legacy context engines", () => {
     registerMemoryPromptSection(() => ["## Memory Recall", "Use memory carefully.", ""]);
 

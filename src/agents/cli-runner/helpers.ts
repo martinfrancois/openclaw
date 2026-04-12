@@ -21,16 +21,105 @@ import { resolveDefaultModelForAgent } from "../model-selection.js";
 import { resolveOwnerDisplaySetting } from "../owner-display.js";
 import type { EmbeddedContextFile } from "../pi-embedded-helpers.js";
 import { detectImageReferences, loadImageFromRef } from "../pi-embedded-runner/run/images.js";
+import { normalizeStructuredPromptSection } from "../prompt-cache-stability.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
 import { buildSystemPromptParams } from "../system-prompt-params.js";
+import type { PromptReportTool } from "../system-prompt-report.js";
 import { buildAgentSystemPrompt } from "../system-prompt.js";
+import { CLI_BUNDLED_PROMPT_TOOL_NAMES, CLI_NATIVE_PROMPT_TOOL_NAMES } from "../tool-catalog.js";
 import { sanitizeImageBlocks } from "../tool-images.js";
 import { formatTomlConfigOverride } from "./toml-inline.js";
 export { buildCliSupervisorScopeKey, resolveCliNoOutputTimeoutMs } from "./reliability.js";
 
 const CLI_RUN_QUEUE = new KeyedAsyncQueue();
+const CLI_PROMPT_TOOL_ROW_PATTERN = /^- ([A-Za-z0-9_.-]+)(?::|\b)/;
+
+export function resolveCliSystemPromptToolNames(params: {
+  tools: readonly AgentTool[];
+  fallbackToolNames?: readonly string[];
+}): string[] {
+  const source =
+    params.tools.length > 0
+      ? params.tools.map((tool) => tool.name)
+      : (params.fallbackToolNames ?? CLI_NATIVE_PROMPT_TOOL_NAMES);
+  const seen = new Set<string>();
+  return source
+    .map((name) => name.trim())
+    .filter((name) => {
+      if (!name || seen.has(name)) {
+        return false;
+      }
+      seen.add(name);
+      return true;
+    });
+}
+
+export function buildCliSystemPromptReportTools(tools: readonly AgentTool[]): PromptReportTool[] {
+  if (tools.length > 0) {
+    return [...tools];
+  }
+  return buildCliSystemPromptReportToolsFromNames(CLI_NATIVE_PROMPT_TOOL_NAMES);
+}
+
+function buildCliSystemPromptReportToolsFromNames(
+  toolNames: readonly string[],
+): PromptReportTool[] {
+  const seen = new Set<string>();
+  return toolNames
+    .map((name) => name.trim())
+    .filter((name) => {
+      if (!name || seen.has(name)) {
+        return false;
+      }
+      seen.add(name);
+      return true;
+    })
+    .map((name) => ({
+      name,
+      description: "",
+    }));
+}
+
+export function buildCliSystemPromptReportToolsFromPrompt(params: {
+  tools: readonly AgentTool[];
+  systemPrompt: string;
+}): {
+  tools: PromptReportTool[];
+  toolListPromptText: string;
+} {
+  if (params.tools.length > 0) {
+    return { tools: [...params.tools], toolListPromptText: "" };
+  }
+  const toolSection = extractPromptSection(params.systemPrompt, "## Tooling");
+  if (!toolSection) {
+    return { tools: [], toolListPromptText: "" };
+  }
+  const toolRows = toolSection
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => CLI_PROMPT_TOOL_ROW_PATTERN.test(line));
+  const toolNames = toolRows
+    .map((line) => line.match(CLI_PROMPT_TOOL_ROW_PATTERN)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+  return {
+    tools: buildCliSystemPromptReportToolsFromNames(toolNames),
+    toolListPromptText: toolRows.join("\n"),
+  };
+}
+
+function extractPromptSection(systemPrompt: string, heading: string): string {
+  const normalizedPrompt = normalizeStructuredPromptSection(systemPrompt);
+  const headingLine = `${heading}\n`;
+  const headingIndex = normalizedPrompt.indexOf(headingLine);
+  if (headingIndex === -1) {
+    return "";
+  }
+  const sectionBody = normalizedPrompt.slice(headingIndex + headingLine.length);
+  const nextHeadingIndex = sectionBody.search(/\n#{1,2} [^\n]+/);
+  return (nextHeadingIndex === -1 ? sectionBody : sectionBody.slice(0, nextHeadingIndex)).trim();
+}
 
 function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId) === "claude-cli";
@@ -72,6 +161,8 @@ export function buildSystemPrompt(params: {
   heartbeatPrompt?: string;
   docsPath?: string;
   tools: AgentTool[];
+  toolNames?: string[];
+  bundleMcp?: boolean;
   contextFiles?: EmbeddedContextFile[];
   skillsPrompt?: string;
   modelDisplay: string;
@@ -99,6 +190,13 @@ export function buildSystemPrompt(params: {
   });
   const ttsHint = params.config ? buildTtsSystemPromptHint(params.config) : undefined;
   const ownerDisplay = resolveOwnerDisplaySetting(params.config);
+  const fallbackToolNames =
+    params.toolNames ??
+    (params.bundleMcp ? CLI_BUNDLED_PROMPT_TOOL_NAMES : CLI_NATIVE_PROMPT_TOOL_NAMES);
+  const toolNames = resolveCliSystemPromptToolNames({
+    tools: params.tools,
+    fallbackToolNames,
+  });
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
     defaultThinkLevel: params.defaultThinkLevel,
@@ -111,7 +209,10 @@ export function buildSystemPrompt(params: {
     docsPath: params.docsPath,
     acpEnabled: params.config?.acp?.enabled !== false,
     runtimeInfo,
-    toolNames: params.tools.map((tool) => tool.name),
+    // CLI backends always expose the native coding workspace/shell toolset even
+    // when the OpenClaw AgentTool list is empty because bundled tools are wired
+    // through the backend bridge instead of this array.
+    toolNames,
     modelAliasLines: buildModelAliasLines(params.config),
     skillsPrompt: params.skillsPrompt,
     userTimezone,

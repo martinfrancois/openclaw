@@ -71,7 +71,9 @@ import {
   setCompactionSafeguardCancelReason,
 } from "../pi-hooks/compaction-safeguard-runtime.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../pi-project-settings.js";
+import { toClientToolDefinitions } from "../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../pi-tools.js";
+import { resolveToolLoopDetectionConfig } from "../pi-tools.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
 import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
@@ -130,7 +132,12 @@ import {
   buildEmbeddedSystemPrompt,
   createSystemPromptOverride,
 } from "./system-prompt.js";
-import { collectAllowedToolNames } from "./tool-name-allowlist.js";
+import {
+  collectAdvertisedToolNames,
+  collectAllowedToolNames,
+  collectSemanticToolAliases,
+  collectSemanticToolNames,
+} from "./tool-name-allowlist.js";
 import {
   logProviderToolSchemaDiagnostics,
   normalizeProviderToolSchemas,
@@ -536,11 +543,15 @@ export async function compactEmbeddedPiSessionDirect(
       modelApi: model.api,
       model,
     });
+    const clientTools = toolsEnabled ? params.clientTools : undefined;
     const bundleMcpRuntime = toolsEnabled
       ? await createBundleMcpToolRuntime({
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
-          reservedToolNames: tools.map((tool) => tool.name),
+          reservedToolNames: [
+            ...tools.map((tool) => tool.name),
+            ...(clientTools?.map((tool) => tool.function.name) ?? []),
+          ],
         })
       : undefined;
     const bundleLspRuntime = toolsEnabled
@@ -549,6 +560,7 @@ export async function compactEmbeddedPiSessionDirect(
           cfg: params.config,
           reservedToolNames: [
             ...tools.map((tool) => tool.name),
+            ...(clientTools?.map((tool) => tool.function.name) ?? []),
             ...(bundleMcpRuntime?.tools.map((tool) => tool.name) ?? []),
           ],
         })
@@ -558,7 +570,25 @@ export async function compactEmbeddedPiSessionDirect(
       ...(bundleMcpRuntime?.tools ?? []),
       ...(bundleLspRuntime?.tools ?? []),
     ];
-    const allowedToolNames = collectAllowedToolNames({ tools: effectiveTools });
+    const advertisedToolNames = collectAdvertisedToolNames({
+      tools: effectiveTools,
+      clientTools,
+    });
+    const semanticToolNames = collectSemanticToolNames({
+      tools: effectiveTools,
+      clientTools,
+      clientToolSemanticAliases: params.clientToolSemanticAliases,
+    });
+    const semanticToolAliases = collectSemanticToolAliases({
+      tools: effectiveTools,
+      clientTools,
+      clientToolSemanticAliases: params.clientToolSemanticAliases,
+    });
+    const nativeToolNames = effectiveTools.map((tool) => tool.name);
+    const allowedToolNames = collectAllowedToolNames({
+      tools: effectiveTools,
+      clientTools,
+    });
     logProviderToolSchemaDiagnostics({
       tools: effectiveTools,
       provider,
@@ -686,6 +716,7 @@ export async function compactEmbeddedPiSessionDirect(
         promptMode,
         runtimeChannel,
         runtimeCapabilities,
+        toolNames: advertisedToolNames,
         agentId: sessionAgentId,
       },
     });
@@ -719,6 +750,10 @@ export async function compactEmbeddedPiSessionDirect(
           messageToolHints,
           sandboxInfo,
           tools: effectiveTools,
+          toolNames: advertisedToolNames,
+          nativeToolNames,
+          semanticToolNames,
+          semanticToolAliases,
           modelAliasLines: buildModelAliasLines(params.config),
           userTimezone,
           userTime,
@@ -741,6 +776,7 @@ export async function compactEmbeddedPiSessionDirect(
             promptMode,
             runtimeChannel,
             runtimeCapabilities,
+            toolNames: advertisedToolNames,
             agentId: sessionAgentId,
             systemPrompt: builtSystemPrompt,
           },
@@ -813,6 +849,19 @@ export async function compactEmbeddedPiSessionDirect(
         tools: effectiveTools,
         sandboxEnabled: !!sandbox?.enabled,
       });
+      const clientToolDefs = clientTools
+        ? toClientToolDefinitions(clientTools, undefined, {
+            agentId: sessionAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            runId: params.runId ?? params.sessionId,
+            loopDetection: resolveToolLoopDetectionConfig({
+              cfg: params.config,
+              agentId: sessionAgentId,
+            }),
+          })
+        : [];
+      const allCustomTools = [...customTools, ...clientToolDefs];
 
       const providerStreamFn = resolveCompactionProviderStream({
         effectiveModel,
@@ -850,7 +899,7 @@ export async function compactEmbeddedPiSessionDirect(
             model: effectiveModel,
             thinkingLevel: mapThinkingLevel(thinkLevel),
             tools: builtInTools,
-            customTools,
+            customTools: allCustomTools,
             sessionManager,
             settingsManager,
             resourceLoader,

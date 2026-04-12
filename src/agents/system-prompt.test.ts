@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import { clearMemoryPluginState, registerMemoryPromptSection } from "../plugins/memory-state.js";
 import { typedCases } from "../test-utils/typed-cases.js";
 import { buildSubagentSystemPrompt } from "./subagent-system-prompt.js";
 import { buildAgentSystemPrompt, buildRuntimeLine } from "./system-prompt.js";
 
 describe("buildAgentSystemPrompt", () => {
+  afterEach(() => {
+    clearMemoryPluginState();
+  });
+
   it("formats owner section for plain, hash, and missing owner lists", () => {
     const cases = typedCases<{
       name: string;
@@ -101,7 +106,7 @@ describe("buildAgentSystemPrompt", () => {
       skillsPrompt:
         "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
       heartbeatPrompt: "ping",
-      toolNames: ["message", "memory_search"],
+      toolNames: ["message", "memory_search", "read", "exec", "process"],
       docsPath: "/tmp/openclaw/docs",
       extraSystemPrompt: "Subagent details",
       ttsHint: "Voice (TTS) is enabled.",
@@ -269,6 +274,138 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).not.toContain('[embed content_type="html" title="Status"]...[/embed]');
   });
 
+  it("keeps messaging bullets in the original order for tool-enabled sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["message", "sessions_send", "subagents"],
+    });
+    const lines = prompt.split("\n");
+    const messagingIndex = lines.indexOf("## Messaging");
+    const replyIndex = lines.indexOf(
+      "- Reply in current session → automatically routes to the source channel (Signal, Telegram, etc.)",
+    );
+    const crossSessionIndex = lines.indexOf(
+      "- Cross-session messaging → use sessions_send(sessionKey, message)",
+    );
+    const subagentsIndex = lines.indexOf(
+      "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
+    );
+    const completionIndex = lines.findIndex((line) =>
+      line.startsWith("- Runtime-generated completion events may ask for a user update."),
+    );
+    const noCurlIndex = lines.indexOf(
+      "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
+    );
+
+    expect(messagingIndex).toBeGreaterThan(-1);
+    expect(replyIndex).toBeGreaterThan(messagingIndex);
+    expect(crossSessionIndex).toBeGreaterThan(replyIndex);
+    expect(subagentsIndex).toBeGreaterThan(crossSessionIndex);
+    expect(completionIndex).toBeGreaterThan(subagentsIndex);
+    expect(noCurlIndex).toBeGreaterThan(completionIndex);
+  });
+
+  it("does not inject tool-only guidance when the tool list is explicitly empty", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+    });
+
+    expect(prompt).toContain("## Messaging");
+    expect(prompt).toContain(
+      "- Reply in current session → automatically routes to the source channel (Signal, Telegram, etc.)",
+    );
+    expect(prompt).toContain("Runtime-generated completion events may ask for a user update.");
+    expect(prompt).not.toContain(
+      "- Cross-session messaging → use sessions_send(sessionKey, message)",
+    );
+    expect(prompt).not.toContain(
+      "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
+    );
+    expect(prompt).not.toContain(
+      "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
+    );
+    expect(prompt).not.toContain("### message tool");
+  });
+
+  it("keeps explicit empty-tool prompts internally consistent across later sections", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      docsPath: "/tmp/openclaw/docs",
+      userTimezone: "America/Chicago",
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+      sandboxInfo: { enabled: true },
+    });
+
+    expect(prompt).toContain("No tools are available in this session.");
+    expect(prompt).toContain(
+      "Do not claim you can call tools, run shell commands, browse, message via tools, or read/write files unless the session policy changes.",
+    );
+    expect(prompt).toContain(
+      "Use a concrete action or direct answer first when the task is actionable; do not stop at a plan or promise-to-act reply.",
+    );
+    expect(prompt).toContain(
+      "Commentary-only turns are incomplete when the next clear step is to answer or act directly without tools.",
+    );
+    expect(prompt).not.toContain("Tool availability (filtered by policy):");
+    expect(prompt).not.toContain("## Tool Call Style");
+    expect(prompt).not.toContain("## OpenClaw CLI Quick Reference");
+    expect(prompt).not.toContain("## Documentation");
+    expect(prompt).not.toContain(
+      "If you need the current date, time, or day of week, run session_status",
+    );
+    expect(prompt).not.toContain("## Sandbox");
+  });
+
+  it("preserves workspace notes and voice hints for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      workspaceNotes: ["Remember the workspace is context-only."],
+      ttsHint: "Prefer the warm voice.",
+    });
+
+    expect(prompt).toContain(
+      "A workspace path is provided for context only. Do not claim you can inspect, edit, or execute inside it unless the session policy changes.",
+    );
+    expect(prompt).toContain("Remember the workspace is context-only.");
+    expect(prompt).toContain("## Voice (TTS)");
+    expect(prompt).toContain("Prefer the warm voice.");
+  });
+
+  it("preserves plugin-owned memory guidance for explicit empty-tool sessions", () => {
+    registerMemoryPromptSection(() => [
+      "## Memory Recall",
+      "Use plugin-owned memory guidance.",
+      "",
+    ]);
+
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+    });
+
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain("Use plugin-owned memory guidance.");
+  });
+
+  it("omits the sandbox section when the tool list is explicitly empty", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      sandboxInfo: {
+        enabled: true,
+        containerWorkspaceDir: "/sandbox/work",
+      },
+    });
+
+    expect(prompt).not.toContain("## Sandbox");
+    expect(prompt).not.toContain("You are running in a sandboxed runtime");
+    expect(prompt).not.toContain("Sandbox container workdir: /sandbox/work");
+  });
+
   it("guides subagent workflows to avoid polling loops", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -284,6 +421,19 @@ describe("buildAgentSystemPrompt", () => {
     );
   });
 
+  it("does not advertise unavailable orchestration tools in explicit native tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["read", "write", "edit", "apply_patch", "grep", "find", "ls", "exec", "process"],
+    });
+
+    expect(prompt).not.toContain("spawn a sub-agent");
+    expect(prompt).not.toContain("subagents(action=list|steer|kill)");
+    expect(prompt).not.toContain("sessions_send(sessionKey, message)");
+    expect(prompt).not.toContain("Do not poll `subagents list`");
+    expect(prompt).not.toContain("`sessions_list`");
+  });
+
   it("lists available tools when provided", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -294,6 +444,114 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("sessions_list");
     expect(prompt).toContain("sessions_history");
     expect(prompt).toContain("sessions_send");
+  });
+
+  it("does not advertise OpenClaw-native exec or subagent flows for client-only toolsets", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["get_weather"],
+      nativeToolNames: [],
+    });
+
+    expect(prompt).toContain("- get_weather");
+    expect(prompt).not.toContain("use exec with enough yieldMs");
+    expect(prompt).not.toContain("process(action=poll, timeout=<ms>)");
+    expect(prompt).not.toContain("spawn a sub-agent");
+    expect(prompt).not.toContain("subagents list");
+    expect(prompt).not.toContain("sessions_list");
+    expect(prompt).not.toContain("Cross-session messaging");
+    expect(prompt).not.toContain("Never use exec/curl for provider messaging");
+  });
+
+  it("does not advertise read-dependent skills or docs guidance for client-only toolsets", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["get_weather"],
+      nativeToolNames: [],
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+      docsPath: "/tmp/openclaw/docs",
+      userTimezone: "UTC",
+    });
+
+    expect(prompt).not.toContain("## Skills (mandatory)");
+    expect(prompt).not.toContain("read its SKILL.md");
+    expect(prompt).not.toContain("## Documentation");
+    expect(prompt).not.toContain("consult local docs first");
+    expect(prompt).not.toContain("run session_status");
+  });
+
+  it("preserves read-dependent workspace guidance for hosted workspace tools", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["read", "exec"],
+      nativeToolNames: [],
+      semanticToolNames: ["read", "exec"],
+      skillsPrompt:
+        "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
+      docsPath: "/tmp/openclaw/docs",
+    });
+
+    expect(prompt).not.toContain("workspace path is provided for context only");
+    expect(prompt).toContain("Treat this directory as the single global workspace");
+    expect(prompt).toContain("## Skills (mandatory)");
+    expect(prompt).toContain("read its SKILL.md");
+    expect(prompt).toContain("## Documentation");
+    expect(prompt).toContain("consult local docs first");
+    expect(prompt).not.toContain("## OpenClaw CLI Quick Reference");
+    expect(prompt).not.toContain("Cross-session messaging");
+  });
+
+  it("does not treat arbitrary hosted tool names as OpenClaw-native capabilities", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["message"],
+      nativeToolNames: [],
+    });
+
+    expect(prompt).toContain("- message");
+    expect(prompt).not.toContain("- message: Send messages and channel actions");
+    expect(prompt).not.toContain("### message tool");
+    expect(prompt).not.toContain("Cross-session messaging");
+    expect(prompt).not.toContain("Never use exec/curl for provider messaging");
+  });
+
+  it("preserves message-only guidance for trusted hosted message tools", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["message"],
+      nativeToolNames: [],
+      semanticToolNames: ["message"],
+    });
+
+    expect(prompt).toContain("- message");
+    expect(prompt).not.toContain("- message: Send messages and channel actions");
+    expect(prompt).toContain("### message tool");
+    expect(prompt).toContain(`respond with ONLY: ${SILENT_REPLY_TOKEN}`);
+    expect(prompt).not.toContain("Cross-session messaging");
+    expect(prompt).toContain("Never use exec/curl for provider messaging");
+  });
+
+  it("keeps the no-curl messaging warning when sessions_send is available without message", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["exec", "sessions_send"],
+    });
+
+    expect(prompt).toContain("Cross-session messaging");
+    expect(prompt).toContain("Never use exec/curl for provider messaging");
+    expect(prompt).not.toContain("### message tool");
+  });
+
+  it("keeps the no-curl messaging warning for exec-only toolsets", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["exec"],
+    });
+
+    expect(prompt).not.toContain("Cross-session messaging");
+    expect(prompt).toContain("Never use exec/curl for provider messaging");
+    expect(prompt).not.toContain("### message tool");
   });
 
   it("documents ACP sessions_spawn agent targeting requirements", () => {
@@ -456,6 +714,21 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("current date");
   });
 
+  it("keeps session_status time guidance for hosted tool-name sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/clawd",
+      userTimezone: "America/Chicago",
+      toolNames: ["session_status"],
+      nativeToolNames: [],
+      semanticToolNames: ["session_status"],
+    });
+
+    expect(prompt).toContain("- session_status");
+    expect(prompt).toContain(
+      "If you need the current date, time, or day of week, run session_status",
+    );
+  });
+
   // The system prompt intentionally does NOT include the current date/time.
   // Only the timezone is included, to keep the prompt stable for caching.
   // See: https://github.com/moltbot/moltbot/commit/66eec295b894bce8333886cfbca3b960c57c4946
@@ -508,6 +781,31 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("update.run");
     expect(prompt).not.toContain("Use config.schema to");
     expect(prompt).not.toContain("config.schema, config.apply");
+  });
+
+  it("does not infer self-update guidance from arbitrary hosted tool names", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["gateway"],
+      nativeToolNames: [],
+      semanticToolNames: [],
+    });
+
+    expect(prompt).toContain("- gateway");
+    expect(prompt).not.toContain("## OpenClaw Self-Update");
+  });
+
+  it("preserves self-update guidance when semantic gateway guidance is explicitly requested", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["gateway"],
+      nativeToolNames: [],
+      semanticToolNames: ["gateway"],
+    });
+
+    expect(prompt).toContain("- gateway");
+    expect(prompt).toContain("## OpenClaw Self-Update");
+    expect(prompt).toContain("ONLY allowed when the user explicitly asks for it");
   });
 
   it("includes skills guidance when skills prompt is present", () => {
@@ -625,6 +923,32 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("## Provider Stable\n\nStable guidance.");
     expect(prompt).toContain("## Provider Dynamic\n\nDynamic guidance.");
     expect(prompt).toContain("## Tool Call Style\nProvider-specific tool call guidance.");
+    expect(prompt).not.toContain("Default: do not narrate routine, low-risk tool calls");
+  });
+
+  it("preserves non-tool provider prompt contributions for explicit empty-tool sessions", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: [],
+      promptContribution: {
+        stablePrefix: "## Provider Stable\n\nStable guidance.",
+        dynamicSuffix: "## Provider Dynamic\n\nDynamic guidance.",
+        sectionOverrides: {
+          interaction_style: "## Interaction Style\nProvider interaction guidance.",
+          tool_call_style: "## Tool Call Style\nProvider-specific tool call guidance.",
+          execution_bias: "## Execution Bias\nProvider execution guidance.",
+        },
+      },
+    });
+
+    expect(prompt).toContain("## Provider Stable\n\nStable guidance.");
+    expect(prompt).toContain("## Provider Dynamic\n\nDynamic guidance.");
+    expect(prompt).toContain("## Interaction Style\nProvider interaction guidance.");
+    expect(prompt).toContain("## Tool Call Style\nProvider-specific tool call guidance.");
+    expect(prompt).toContain("## Execution Bias\nProvider execution guidance.");
+    expect(prompt).not.toContain(
+      "Use a concrete action or direct answer first when the task is actionable; do not stop at a plan or promise-to-act reply.",
+    );
     expect(prompt).not.toContain("Default: do not narrate routine, low-risk tool calls");
   });
 

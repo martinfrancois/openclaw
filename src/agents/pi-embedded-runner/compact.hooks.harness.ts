@@ -84,7 +84,37 @@ export const sessionMessages: unknown[] = [
   },
 ];
 export const sessionAbortCompactionMock: Mock<(reason?: unknown) => void> = vi.fn();
+export const createAgentSessionMock = vi.fn(async () => {
+  const session = {
+    sessionId: "session-1",
+    messages: sessionMessages.map((message) =>
+      typeof structuredClone === "function"
+        ? structuredClone(message)
+        : JSON.parse(JSON.stringify(message)),
+    ),
+    agent: {
+      streamFn: vi.fn(),
+      transport: "sse",
+      state: {
+        get messages() {
+          return session.messages;
+        },
+        set messages(messages: unknown[]) {
+          session.messages = [...(messages as typeof session.messages)];
+        },
+      },
+    },
+    compact: vi.fn(async () => {
+      session.messages.splice(1);
+      return await sessionCompactImpl();
+    }),
+    abortCompaction: sessionAbortCompactionMock,
+    dispose: vi.fn(),
+  };
+  return { session };
+});
 export const createOpenClawCodingToolsMock = vi.fn(() => []);
+export const resolveToolLoopDetectionConfigMock = vi.fn(() => undefined);
 export const resolveEmbeddedAgentStreamFnMock: Mock<
   (params?: unknown) => MockEmbeddedAgentStreamFn
 > = vi.fn((_params?: unknown) => vi.fn());
@@ -185,8 +215,11 @@ export function resetCompactHooksHarnessMocks(): void {
 
   triggerInternalHook.mockReset();
   resetCompactSessionStateMocks();
+  createAgentSessionMock.mockClear();
   createOpenClawCodingToolsMock.mockReset();
   createOpenClawCodingToolsMock.mockReturnValue([]);
+  resolveToolLoopDetectionConfigMock.mockReset();
+  resolveToolLoopDetectionConfigMock.mockReturnValue(undefined);
 }
 
 export async function loadCompactHooksHarness(): Promise<{
@@ -210,14 +243,20 @@ export async function loadCompactHooksHarness(): Promise<{
     maybeCompactAgentHarnessSession: vi.fn(async () => undefined),
   }));
 
-  vi.doMock("../../plugins/provider-runtime.js", () => ({
-    prepareProviderRuntimeAuth: vi.fn(async () => ({ resolvedApiKey: undefined })),
-    resolveProviderSystemPromptContribution: vi.fn(() => undefined),
-    resolveProviderTextTransforms: vi.fn(() => undefined),
-    transformProviderSystemPrompt: vi.fn(
-      (params: { systemPrompt?: string }) => params.systemPrompt,
-    ),
-  }));
+  vi.doMock("../../plugins/provider-runtime.js", async () => {
+    const actual = await vi.importActual<typeof import("../../plugins/provider-runtime.js")>(
+      "../../plugins/provider-runtime.js",
+    );
+    return {
+      ...actual,
+      prepareProviderRuntimeAuth: vi.fn(async () => ({ resolvedApiKey: undefined })),
+      resolveProviderSystemPromptContribution: vi.fn(() => undefined),
+      resolveProviderTextTransforms: vi.fn(() => undefined),
+      transformProviderSystemPrompt: vi.fn(
+        (params: { context?: { systemPrompt?: string } }) => params.context?.systemPrompt,
+      ),
+    };
+  });
 
   vi.doMock("../provider-stream.js", () => ({
     registerProviderStreamForModel: registerProviderStreamForModelMock,
@@ -247,35 +286,7 @@ export async function loadCompactHooksHarness(): Promise<{
   vi.doMock("@mariozechner/pi-coding-agent", () => ({
     AuthStorage: function AuthStorage() {},
     ModelRegistry: function ModelRegistry() {},
-    createAgentSession: vi.fn(async () => {
-      const session = {
-        sessionId: "session-1",
-        messages: sessionMessages.map((message) =>
-          typeof structuredClone === "function"
-            ? structuredClone(message)
-            : JSON.parse(JSON.stringify(message)),
-        ),
-        agent: {
-          streamFn: vi.fn(),
-          transport: "sse",
-          state: {
-            get messages() {
-              return session.messages;
-            },
-            set messages(messages: unknown[]) {
-              session.messages = [...(messages as typeof session.messages)];
-            },
-          },
-        },
-        compact: vi.fn(async () => {
-          session.messages.splice(1);
-          return await sessionCompactImpl();
-        }),
-        abortCompaction: sessionAbortCompactionMock,
-        dispose: vi.fn(),
-      };
-      return { session };
-    }),
+    createAgentSession: createAgentSessionMock,
     DefaultResourceLoader: function DefaultResourceLoader() {},
     SessionManager: {
       open: vi.fn(() => ({})),
@@ -375,6 +386,7 @@ export async function loadCompactHooksHarness(): Promise<{
 
   vi.doMock("../pi-tools.js", () => ({
     createOpenClawCodingTools: createOpenClawCodingToolsMock,
+    resolveToolLoopDetectionConfig: resolveToolLoopDetectionConfigMock,
   }));
 
   vi.doMock("./replay-history.js", () => ({

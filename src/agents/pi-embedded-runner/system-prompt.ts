@@ -48,6 +48,10 @@ export function buildEmbeddedSystemPrompt(params: {
   messageToolHints?: string[];
   sandboxInfo?: EmbeddedSandboxInfo;
   tools: AgentTool[];
+  toolNames?: string[];
+  nativeToolNames?: string[];
+  semanticToolNames?: string[];
+  semanticToolAliases?: Record<string, string>;
   modelAliasLines: string[];
   userTimezone: string;
   userTime?: string;
@@ -77,7 +81,11 @@ export function buildEmbeddedSystemPrompt(params: {
     runtimeInfo: params.runtimeInfo,
     messageToolHints: params.messageToolHints,
     sandboxInfo: params.sandboxInfo,
-    toolNames: params.tools.map((tool) => tool.name),
+    toolNames: params.toolNames ?? params.tools.map((tool) => tool.name),
+    nativeToolNames: params.nativeToolNames ?? params.tools.map((tool) => tool.name),
+    semanticToolNames:
+      params.semanticToolNames ?? params.nativeToolNames ?? params.tools.map((tool) => tool.name),
+    semanticToolAliases: params.semanticToolAliases,
     modelAliasLines: params.modelAliasLines,
     userTimezone: params.userTimezone,
     userTime: params.userTime,

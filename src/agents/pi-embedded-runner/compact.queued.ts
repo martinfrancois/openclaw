@@ -130,6 +130,8 @@ export async function compactEmbeddedPiSession(
             agentDir,
             config: params.config,
             skillsSnapshot: params.skillsSnapshot,
+            clientTools: params.clientTools,
+            clientToolSemanticAliases: params.clientToolSemanticAliases,
             senderIsOwner: params.senderIsOwner,
             senderId: params.senderId,
             provider: params.provider,

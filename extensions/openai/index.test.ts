@@ -12,6 +12,7 @@ import { buildOpenAIImageGenerationProvider } from "./image-generation-provider.
 import plugin from "./index.js";
 import {
   OPENAI_FRIENDLY_PROMPT_OVERLAY,
+  OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS,
   OPENAI_GPT5_EXECUTION_BIAS,
   OPENAI_GPT5_OUTPUT_CONTRACT,
   OPENAI_GPT5_TOOL_CALL_STYLE,
@@ -362,6 +363,7 @@ describe("openai plugin", () => {
       promptMode: "full",
       runtimeChannel: undefined,
       runtimeCapabilities: undefined,
+      toolNames: ["read"],
       agentId: undefined,
     };
 
@@ -395,6 +397,52 @@ describe("openai plugin", () => {
         modelId: "gpt-image-1",
       }),
     ).toBeUndefined();
+  });
+
+  it("uses no-tool-safe GPT-5 overlays when the tool list is explicitly empty", async () => {
+    const { providers } = await registerOpenAIPluginWithHook({
+      pluginConfig: { personality: "friendly" },
+    });
+
+    const openaiProvider = requireRegisteredProvider(providers, "openai");
+    expect(
+      openaiProvider.resolveSystemPromptContribution?.({
+        config: undefined,
+        agentDir: undefined,
+        workspaceDir: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        promptMode: "full",
+        runtimeChannel: undefined,
+        runtimeCapabilities: undefined,
+        toolNames: [],
+        agentId: undefined,
+      }),
+    ).toEqual({
+      stablePrefix: [OPENAI_GPT5_OUTPUT_CONTRACT, OPENAI_GPT5_TOOL_CALL_STYLE].join("\n\n"),
+      sectionOverrides: {
+        interaction_style: OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS,
+        execution_bias: OPENAI_GPT5_EXECUTION_BIAS,
+      },
+    });
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).not.toContain(
+      "Prefer the first real tool step over more narration.",
+    );
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).toContain(
+      "Prefer the first real step over more narration.",
+    );
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).not.toContain(
+      "Use your existing tools and capabilities, orient yourself, and be proactive. Think big picture.",
+    );
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).toContain(
+      "Use your existing context and judgment, orient yourself, and be proactive. Think big picture.",
+    );
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).not.toContain(
+      "If HEARTBEAT.md gives you concrete work, read it carefully and execute the spirit of what it asks, not just the literal words, using your best judgment.",
+    );
+    expect(OPENAI_FRIENDLY_PROMPT_OVERLAY_NO_TOOLS).toContain(
+      "If HEARTBEAT.md gives you concrete work, follow it carefully and execute the spirit of what it asks, not just the literal words, using your best judgment.",
+    );
   });
 
   it("includes stronger execution guidance in the OpenAI prompt overlay", () => {

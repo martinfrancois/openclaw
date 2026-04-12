@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyExtraParamsToAgentMock,
   contextEngineCompactMock,
+  createAgentSessionMock,
   createOpenClawCodingToolsMock,
   ensureRuntimePluginsLoaded,
   estimateTokensMock,
@@ -284,6 +285,43 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
         senderName: "Alice",
         senderUsername: "alice_u",
         senderE164: "+15551234567",
+      }),
+    );
+  });
+
+  it("registers hosted client tools in compaction sessions when they are advertised", async () => {
+    resolveContextEngineMock.mockResolvedValue({
+      info: { ownsCompaction: false },
+      compact: contextEngineCompactMock,
+    } as never);
+
+    await compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp/workspace",
+      clientTools: [
+        {
+          type: "function",
+          function: {
+            name: "file_read",
+            description: "Read a file",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+    });
+
+    expect(createAgentSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customTools: [
+          expect.objectContaining({
+            name: "file_read",
+            label: "file_read",
+            description: "Read a file",
+            parameters: { type: "object" },
+            execute: expect.any(Function),
+          }),
+        ],
       }),
     );
   });

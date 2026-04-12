@@ -16,8 +16,9 @@ import {
 } from "./cli-runner.test-support.js";
 import { buildCliEnvAuthLog, executePreparedCliRun } from "./cli-runner/execute.js";
 import { buildSystemPrompt } from "./cli-runner/helpers.js";
-import { setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
+import { prepareCliRunContext, setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
 import type { PreparedCliRunContext } from "./cli-runner/types.js";
+import { CLI_BUNDLED_PROMPT_TOOL_NAMES, CLI_NATIVE_PROMPT_TOOL_NAMES } from "./tool-catalog.js";
 
 beforeEach(() => {
   resetAgentEventsForTest();
@@ -182,6 +183,278 @@ describe("runCliAgent spawn path", () => {
     expect(systemPrompt).toContain("## Skills (mandatory)");
     expect(systemPrompt).toContain("<name>weather</name>");
     expect(systemPrompt).toContain("/tmp/skills/weather/SKILL.md");
+  });
+
+  it("uses the bundled CLI fallback tool inventory when no AgentTool inventory is provided", () => {
+    const systemPrompt = buildSystemPrompt({
+      workspaceDir: "/tmp",
+      modelDisplay: "claude-cli/sonnet",
+      tools: [],
+      bundleMcp: true,
+    });
+
+    expect(systemPrompt).toContain("Tool availability (filtered by policy):");
+    expect(systemPrompt).toContain("- read:");
+    expect(systemPrompt).toContain("- exec:");
+    expect(systemPrompt).toContain("- session_status:");
+    expect(systemPrompt).toContain("- subagents:");
+    expect(systemPrompt).toContain("- message:");
+    expect(systemPrompt).not.toContain("No tools are available in this session.");
+  });
+
+  it("keeps CLI prompt reports aligned with the bundled fallback tool list", async () => {
+    setCliRunnerPrepareTestDeps({
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-prompt-report-tools",
+      }),
+    );
+
+    expect(context.systemPrompt).toContain("- read:");
+    expect(context.systemPrompt).toContain("- exec:");
+    expect(context.systemPrompt).toContain("- session_status:");
+    expect(context.systemPrompt).toContain("- subagents:");
+    expect(context.systemPrompt).toContain("- message:");
+    expect(context.systemPromptReport.tools.entries.map((entry) => entry.name).toSorted()).toEqual(
+      [...CLI_BUNDLED_PROMPT_TOOL_NAMES].toSorted(),
+    );
+    const toolSection = context.systemPrompt
+      .split("\n## Tool Call Style\n")[0]
+      ?.split("## Tooling\n")[1];
+    const toolRows = (toolSection ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /^- [A-Za-z0-9_.-]+(?::|\b)/.test(line))
+      .join("\n");
+    expect(context.systemPromptReport.tools.listChars).toBe(toolRows.length);
+    expect(context.systemPromptReport.tools.schemaChars).toBe(0);
+  });
+
+  it("falls back to native CLI tools when bundle MCP is configured but the loopback runtime is absent", async () => {
+    setCliRunnerPrepareTestDeps({
+      getActiveMcpLoopbackRuntime: () => undefined,
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-no-loopback-runtime",
+      }),
+    );
+
+    expect(context.systemPrompt).toContain("- read:");
+    expect(context.systemPrompt).toContain("- exec:");
+    expect(context.systemPrompt).not.toContain("- session_status:");
+    expect(context.systemPrompt).not.toContain("- subagents:");
+    expect(context.systemPrompt).not.toContain("- message:");
+    expect(context.systemPromptReport.tools.entries.map((entry) => entry.name).toSorted()).toEqual(
+      [...CLI_NATIVE_PROMPT_TOOL_NAMES].toSorted(),
+    );
+    expect(context.preparedBackend.env?.OPENCLAW_MCP_SESSION_KEY).toBeUndefined();
+  });
+
+  it("derives bundled CLI loopback tools from the resolved main-session key", async () => {
+    const resolveGatewayScopedToolsMock = vi.fn(() => ({ tools: [] }));
+    setCliRunnerPrepareTestDeps({
+      resolveGatewayScopedTools: resolveGatewayScopedToolsMock as never,
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-main-session-key",
+        config: {
+          session: { mainKey: "desk" },
+          agents: { list: [{ id: "ops", default: true }] },
+        } as never,
+      }),
+    );
+
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:ops:desk",
+      }),
+    );
+  });
+
+  it("derives bundled CLI loopback tools from the selected agent when no session key is provided", async () => {
+    const resolveGatewayScopedToolsMock = vi.fn(() => ({ tools: [] }));
+    setCliRunnerPrepareTestDeps({
+      resolveGatewayScopedTools: resolveGatewayScopedToolsMock as never,
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-agent-main-session-key",
+        agentId: "ops",
+        config: {
+          session: { mainKey: "desk" },
+          agents: {
+            list: [{ id: "main", default: true }, { id: "ops" }],
+          },
+        } as never,
+      }),
+    );
+
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:ops:desk",
+      }),
+    );
+    expect(context.preparedBackend.env?.OPENCLAW_MCP_SESSION_KEY).toBe("agent:ops:desk");
+  });
+
+  it("resolves bundled CLI loopback tools against the global main session when global scope is enabled", async () => {
+    const resolveGatewayScopedToolsMock = vi.fn(() => ({ tools: [] }));
+    setCliRunnerPrepareTestDeps({
+      resolveGatewayScopedTools: resolveGatewayScopedToolsMock as never,
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-global-main-session-key",
+        agentId: "ops",
+        config: {
+          session: { scope: "global", mainKey: "desk" },
+          agents: {
+            list: [{ id: "main", default: true }, { id: "ops" }],
+          },
+        } as never,
+      }),
+    );
+
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "global",
+      }),
+    );
+    expect(context.preparedBackend.env?.OPENCLAW_MCP_SESSION_KEY).toBe("global");
+  });
+
+  it("canonicalizes explicit main session aliases before resolving bundled CLI loopback tools", async () => {
+    const resolveGatewayScopedToolsMock = vi.fn(() => ({ tools: [] }));
+    setCliRunnerPrepareTestDeps({
+      resolveGatewayScopedTools: resolveGatewayScopedToolsMock as never,
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionKey: "main",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-explicit-main-session-alias",
+        config: {
+          session: { mainKey: "desk" },
+          agents: {
+            list: [{ id: "ops", default: true }, { id: "main" }],
+          },
+        } as never,
+      }),
+    );
+
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:ops:desk",
+      }),
+    );
+    expect(context.preparedBackend.env?.OPENCLAW_MCP_SESSION_KEY).toBe("agent:ops:desk");
+  });
+
+  it("canonicalizes explicit custom main session aliases before resolving bundled CLI loopback tools", async () => {
+    const resolveGatewayScopedToolsMock = vi.fn(() => ({ tools: [] }));
+    setCliRunnerPrepareTestDeps({
+      resolveGatewayScopedTools: resolveGatewayScopedToolsMock as never,
+      getActiveMcpLoopbackRuntime: () => ({ port: 23119, token: "loopback-token" }),
+    });
+
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionKey: "desk",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-explicit-custom-main-session-alias",
+        config: {
+          session: { mainKey: "desk" },
+          agents: {
+            list: [{ id: "ops", default: true }, { id: "main" }],
+          },
+        } as never,
+      }),
+    );
+
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:ops:desk",
+      }),
+    );
+    expect(context.preparedBackend.env?.OPENCLAW_MCP_SESSION_KEY).toBe("agent:ops:desk");
+  });
+
+  it("drops fallback CLI prompt-report tools when a prompt override replaces the tool catalog", async () => {
+    const context = await prepareCliRunContext(
+      buildRunClaudeCliAgentParams({
+        sessionId: "openclaw-session",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        prompt: "hi",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-prompt-report-override",
+        config: {
+          agents: {
+            defaults: {
+              systemPromptOverride: "Custom CLI prompt without the default tool catalog.",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(context.systemPrompt).toContain("Custom CLI prompt without the default tool catalog.");
+    expect(context.systemPromptReport.tools.entries).toEqual([]);
   });
 
   it("pipes Claude prompts over stdin instead of argv", async () => {

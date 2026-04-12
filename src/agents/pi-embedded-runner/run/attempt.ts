@@ -159,7 +159,12 @@ import {
   createSystemPromptOverride,
 } from "../system-prompt.js";
 import { dropThinkingBlocks } from "../thinking.js";
-import { collectAllowedToolNames } from "../tool-name-allowlist.js";
+import {
+  collectAdvertisedToolNames,
+  collectAllowedToolNames,
+  collectSemanticToolAliases,
+  collectSemanticToolNames,
+} from "../tool-name-allowlist.js";
 import { installToolResultContextGuard } from "../tool-result-context-guard.js";
 import { truncateOversizedToolResultsInSessionManager } from "../tool-result-truncation.js";
 import {
@@ -590,6 +595,21 @@ export async function runEmbeddedAttempt(
       ...(bundleMcpRuntime?.tools ?? []),
       ...(bundleLspRuntime?.tools ?? []),
     ];
+    const advertisedToolNames = collectAdvertisedToolNames({
+      tools: effectiveTools,
+      clientTools,
+    });
+    const semanticToolNames = collectSemanticToolNames({
+      tools: effectiveTools,
+      clientTools,
+      clientToolSemanticAliases: params.clientToolSemanticAliases,
+    });
+    const semanticToolAliases = collectSemanticToolAliases({
+      tools: effectiveTools,
+      clientTools,
+      clientToolSemanticAliases: params.clientToolSemanticAliases,
+    });
+    const nativeToolNames = effectiveTools.map((tool) => tool.name);
     const allowedToolNames = collectAllowedToolNames({
       tools: effectiveTools,
       clientTools,
@@ -742,6 +762,7 @@ export async function runEmbeddedAttempt(
         promptMode: effectivePromptMode,
         runtimeChannel,
         runtimeCapabilities,
+        toolNames: advertisedToolNames,
         agentId: sessionAgentId,
       },
     });
@@ -772,6 +793,10 @@ export async function runEmbeddedAttempt(
         messageToolHints,
         sandboxInfo,
         tools: effectiveTools,
+        toolNames: advertisedToolNames,
+        nativeToolNames,
+        semanticToolNames,
+        semanticToolAliases,
         modelAliasLines: buildModelAliasLines(params.config),
         userTimezone,
         userTime,
@@ -794,6 +819,7 @@ export async function runEmbeddedAttempt(
         promptMode: effectivePromptMode,
         runtimeChannel,
         runtimeCapabilities,
+        toolNames: advertisedToolNames,
         agentId: sessionAgentId,
         systemPrompt: builtAppendPrompt,
       },
@@ -824,7 +850,7 @@ export async function runEmbeddedAttempt(
       bootstrapFiles: hookAdjustedBootstrapFiles,
       injectedFiles: contextFiles,
       skillsPrompt,
-      tools: effectiveTools,
+      tools: [...effectiveTools, ...(clientTools ?? [])],
     });
     const systemPromptOverride = createSystemPromptOverride(appendPrompt);
     let systemPromptText = systemPromptOverride();

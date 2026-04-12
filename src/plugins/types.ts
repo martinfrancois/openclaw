@@ -1038,6 +1038,7 @@ export type ProviderSystemPromptContributionContext = {
   promptMode: PromptMode;
   runtimeChannel?: string;
   runtimeCapabilities?: string[];
+  toolNames?: string[];
   agentId?: string;
 };
 

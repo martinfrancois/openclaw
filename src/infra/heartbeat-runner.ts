@@ -490,6 +490,25 @@ function normalizeHeartbeatReply(
   return { shouldSkip: false, text: finalText, hasMedia };
 }
 
+function resolveExecEventFallbackText(
+  pendingEvents: string[],
+  responsePrefix: string | undefined,
+): string | null {
+  const execEvents = pendingEvents
+    .filter(isExecCompletionEvent)
+    .map((event) => event.trim())
+    .filter(Boolean);
+  if (execEvents.length === 0) {
+    return null;
+  }
+
+  const combined = execEvents.join("\n");
+  if (!responsePrefix || combined.startsWith(responsePrefix)) {
+    return combined;
+  }
+  return `${responsePrefix} ${combined}`;
+}
+
 type HeartbeatReasonFlags = {
   isExecEventReason: boolean;
   isCronEventReason: boolean;
@@ -1050,16 +1069,31 @@ export async function runHeartbeatOnce(opts: {
 
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const normalized = normalizeHeartbeatReply(replyPayload, responsePrefix, ackMaxChars);
+    const execEventFallbackText = hasExecCompletion
+      ? resolveExecEventFallbackText(
+          preflight.pendingEventEntries.map((event) => event.text),
+          responsePrefix,
+        )
+      : null;
     // For exec completion events, don't skip even if the response looks like HEARTBEAT_OK.
     // The model should be responding with exec results, not ack tokens.
-    // Also, if normalized.text is empty due to token stripping but we have exec completion,
-    // fall back to the original reply text.
-    const execFallbackText =
+    // If it still returns HEARTBEAT_OK, fall back to the queued exec event text.
+    if (
+      hasExecCompletion &&
+      normalized.shouldSkip &&
+      !normalized.hasMedia &&
+      execEventFallbackText
+    ) {
+      normalized.text = execEventFallbackText;
+      normalized.shouldSkip = false;
+    }
+    // If the reply stripped to empty for another reason, keep the original reply as a last resort.
+    const execReplyFallbackText =
       hasExecCompletion && !normalized.text.trim() && replyPayload.text?.trim()
         ? replyPayload.text.trim()
         : null;
-    if (execFallbackText) {
-      normalized.text = execFallbackText;
+    if (execReplyFallbackText) {
+      normalized.text = execReplyFallbackText;
       normalized.shouldSkip = false;
     }
     const shouldSkipMain = normalized.shouldSkip && !normalized.hasMedia && !hasExecCompletion;

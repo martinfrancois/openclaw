@@ -1711,13 +1711,17 @@ export function createExecTool(
             content: [
               {
                 type: "text",
-                text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
-                  run.session.pid ?? "n/a"
-                }). Use process (list/poll/log/write/kill/clear/remove) for follow-up.`,
+                text:
+                  `${getWarningText()}Command still running (session ${run.session.id}, pid ${
+                    run.session.pid ?? "n/a"
+                  }). This only confirms the wrapper session is alive. ` +
+                  "Use process log/poll to verify the requested workflow actually started before reporting progress. " +
+                  "Use process (list/poll/log/write/kill/clear/remove) for follow-up.",
               },
             ],
             details: {
               status: "running",
+              runningScope: "wrapper-session",
               sessionId: run.session.id,
               pid: run.session.pid ?? undefined,
               startedAt: run.startedAt,

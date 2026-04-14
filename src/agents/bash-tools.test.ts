@@ -44,6 +44,9 @@ const OUTPUT_DONE = "done";
 const OUTPUT_NOPE = "nope";
 const OUTPUT_EXEC_COMPLETED = "Exec completed";
 const OUTPUT_EXIT_CODE_1 = "Command exited with code 1";
+const OUTPUT_WRAPPER_SESSION_WARNING = "This only confirms the wrapper session is alive.";
+const OUTPUT_VERIFY_STARTED_WARNING =
+  "Use process log/poll to verify the requested workflow actually started before reporting progress.";
 const shellEcho = (message: string) => (isWin ? `Write-Output ${message}` : `echo ${message}`);
 const COMMAND_ECHO_HELLO = shellEcho("hello");
 const COMMAND_PRINT_PATH = isWin ? "Write-Output $env:PATH" : "echo $PATH";
@@ -448,6 +451,9 @@ describe("tool descriptions", () => {
     expect(execWithCron.description).toContain(
       "rely on automatic completion wake when it is enabled and the command emits output or fails; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
     );
+    expect(execWithCron.description).toContain(
+      "A running exec result only confirms the wrapper session is alive; use process log/poll before claiming the requested workflow started.",
+    );
     expect(processWithCron.description).toContain(
       "completion confirmation when automatic completion wake is unavailable.",
     );
@@ -463,6 +469,9 @@ describe("tool descriptions", () => {
     expect(execTool.description).not.toContain("use cron instead");
     expect(processTool.description).not.toContain("scheduled follow-ups");
     expect(execTool.description).toContain("otherwise use process to confirm completion");
+    expect(execTool.description).toContain(
+      "A running exec result only confirms the wrapper session is alive",
+    );
     expect(processTool.description).toContain(
       "completion confirmation when automatic completion wake is unavailable",
     );
@@ -495,6 +504,10 @@ describe("exec tool backgrounding", () => {
         expect(readTextContent(result.content) ?? "").toContain(OUTPUT_DONE);
         return;
       }
+
+      expect(result.details).toMatchObject({ runningScope: "wrapper-session" });
+      expect(readTextContent(result.content) ?? "").toContain(OUTPUT_WRAPPER_SESSION_WARNING);
+      expect(readTextContent(result.content) ?? "").toContain(OUTPUT_VERIFY_STARTED_WARNING);
 
       const sessionId = requireRunningSessionId(result);
 

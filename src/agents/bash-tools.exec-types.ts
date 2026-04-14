@@ -45,6 +45,7 @@ export type ExecElevatedDefaults = {
 export type ExecToolDetails =
   | {
       status: "running";
+      runningScope: "wrapper-session";
       sessionId: string;
       pid?: number;
       startedAt: number;

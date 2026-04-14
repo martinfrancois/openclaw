@@ -784,6 +784,9 @@ export async function runHeartbeatOnce(opts: {
   }
 
   const previousUpdatedAt = entry?.updatedAt;
+  const hasPendingExecCompletion =
+    preflight.shouldInspectPendingEvents &&
+    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text));
 
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
@@ -795,6 +798,7 @@ export async function runHeartbeatOnce(opts: {
     cfg,
     entry,
     heartbeat,
+    allowAsyncWakeFallbackToLast: preflight.isWakeReason && hasPendingExecCompletion,
     // Isolated heartbeat runs drain system events from their dedicated
     // `:heartbeat` session, not from the base session we peek during preflight.
     // Reusing base-session turnSource routing here can pin later isolated runs

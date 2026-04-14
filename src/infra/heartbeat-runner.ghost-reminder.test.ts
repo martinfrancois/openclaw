@@ -361,7 +361,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
   it("classifies hook:wake exec completions as exec-event prompts", async () => {
     const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
       tmpPrefix: "openclaw-hook-exec-",
-      replyText: "Handled internally",
+      replyText: "Handled follow-up",
       reason: "hook:wake",
       target: "none",
       enqueue: (sessionKey) => {
@@ -372,8 +372,10 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(result.status).toBe("ran");
     expect(calledCtx?.Provider).toBe("exec-event");
     expect(calledCtx?.ForceSenderIsOwnerFalse).toBe(true);
-    expect(calledCtx?.Body).toContain("Handle the result internally");
-    expect(sendTelegram).not.toHaveBeenCalled();
+    expect(calledCtx?.Body).toContain("Please relay the command output to the user");
+    expect(calledCtx?.Body).not.toContain("Handle the result internally");
+    expect(sendTelegram).toHaveBeenCalledTimes(1);
+    expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
   });
 
   it("does not classify base-session hook:wake exec completions as exec-event prompts when isolated sessions are enabled", async () => {
@@ -416,6 +418,28 @@ describe("Ghost reminder bug (issue #13317)", () => {
       "exec finished: blocked - background coding task failed after waiting in the temp repo, with no file changes",
     );
     expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("HEARTBEAT_OK");
+  });
+
+  it("relays wake-triggered exec completions even when heartbeat target is none", async () => {
+    const { result, sendTelegram, calledCtx, replyCallCount } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-hook-exec-target-none-",
+      replyText: "Handled follow-up",
+      reason: "hook:wake",
+      target: "none",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent("exec finished: blocked - background coding task needs attention", {
+          sessionKey,
+        });
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(replyCallCount).toBe(1);
+    expect(calledCtx?.Provider).toBe("exec-event");
+    expect(calledCtx?.Body).toContain("Please relay the command output to the user");
+    expect(calledCtx?.Body).not.toContain("Handle the result internally");
+    expect(sendTelegram).toHaveBeenCalledTimes(1);
+    expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
   });
 
   it("forces owner downgrade for untrusted hook:wake system events", async () => {

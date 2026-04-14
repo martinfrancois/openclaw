@@ -11,8 +11,9 @@ describe("bundled coding-agent follow-up guidance", () => {
 
     expect(content).toContain("If you promise a later update");
     expect(content).toContain("covers both success and blocker/failure");
-    expect(content).toContain('openclaw system event --text "Done:');
-    expect(content).toContain('openclaw system event --text "Blocked:');
+    expect(content).toContain("Use the standardized `exec finished:` prefix");
+    expect(content).toContain('openclaw system event --text "exec finished: completed -');
+    expect(content).toContain('openclaw system event --text "exec finished: blocked -');
     expect(content).toContain("If you told the user “I’ll update you,” this is required");
   });
 });

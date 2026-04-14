@@ -395,6 +395,29 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(sendTelegram).not.toHaveBeenCalled();
   });
 
+  it("falls back to the exec event text when a wake run returns HEARTBEAT_OK", async () => {
+    const { result, sendTelegram, calledCtx, replyCallCount } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-hook-exec-fallback-",
+      replyText: "HEARTBEAT_OK",
+      reason: "hook:wake",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent(
+          "exec finished: blocked - background coding task failed after waiting in the temp repo, with no file changes",
+          { sessionKey },
+        );
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(replyCallCount).toBe(1);
+    expect(calledCtx?.Provider).toBe("exec-event");
+    expect(sendTelegram).toHaveBeenCalledTimes(1);
+    expect(sendTelegram.mock.calls[0]?.[1]).toContain(
+      "exec finished: blocked - background coding task failed after waiting in the temp repo, with no file changes",
+    );
+    expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("HEARTBEAT_OK");
+  });
+
   it("forces owner downgrade for untrusted hook:wake system events", async () => {
     await expectUntrustedEventOwnership({
       tmpPrefix: "openclaw-hook-untrusted-",

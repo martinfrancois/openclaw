@@ -555,6 +555,102 @@ function splitShellSegmentsOutsideQuotes(
   return segments;
 }
 
+function hasDetachedShellBackgrounding(segment: string): boolean {
+  let token = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let sawBackgroundOperator = false;
+  let sawWaitAfterBackground = false;
+
+  const flushToken = () => {
+    const lower = token.trim().toLowerCase();
+    if (sawBackgroundOperator && lower === "wait") {
+      sawWaitAfterBackground = true;
+    }
+    token = "";
+  };
+
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+    const next = segment[i + 1];
+
+    if (escaped) {
+      token += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && ch === "\\") {
+      token += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (inSingle) {
+      token += ch;
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      token += ch;
+      if (ch === '"') {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      token += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      token += ch;
+      continue;
+    }
+
+    if (ch === "&") {
+      if (next === "&") {
+        flushToken();
+        i += 1;
+        continue;
+      }
+      flushToken();
+      sawBackgroundOperator = true;
+      continue;
+    }
+
+    if (/\s/u.test(ch) || ch === "|" || ch === ";" || ch === "(" || ch === ")") {
+      flushToken();
+      continue;
+    }
+
+    token += ch;
+  }
+
+  flushToken();
+  return sawBackgroundOperator && !sawWaitAfterBackground;
+}
+
+function rejectDetachedShellBackgrounding(command: string): void {
+  const hasDetachedSegment = splitShellSegmentsOutsideQuotes(command, {
+    splitPipes: false,
+  }).some((segment) => hasDetachedShellBackgrounding(segment));
+  if (!hasDetachedSegment) {
+    return;
+  }
+
+  throw new Error(
+    "exec preflight: detached shell backgrounding detected. Use exec background=true or yieldMs so OpenClaw can register a pollable process session, and keep shell-managed background jobs paired with wait before the shell exits.",
+  );
+}
+
 function isInterpreterExecutable(executable: string | undefined): boolean {
   if (!executable) {
     return false;
@@ -1658,6 +1754,7 @@ export function createExecTool(
 
       // Preflight: catch a common model failure mode (shell syntax leaking into Python/JS sources)
       // before we execute and burn tokens in cron loops.
+      rejectDetachedShellBackgrounding(params.command);
       await validateScriptFileForShellBleed({ command: params.command, workdir });
 
       const run = await runExecProcess({

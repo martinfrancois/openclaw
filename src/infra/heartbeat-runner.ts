@@ -798,7 +798,10 @@ export async function runHeartbeatOnce(opts: {
     cfg,
     entry,
     heartbeat,
-    allowAsyncWakeFallbackToLast: preflight.isWakeReason && hasPendingExecCompletion,
+    // Async exec completions should be able to relay back to the last user even
+    // when heartbeat.target is "none", regardless of whether they are processed
+    // via an explicit exec-event run or a hook/wake run that drains the same queue.
+    allowAsyncWakeFallbackToLast: hasPendingExecCompletion,
     // Isolated heartbeat runs drain system events from their dedicated
     // `:heartbeat` session, not from the base session we peek during preflight.
     // Reusing base-session turnSource routing here can pin later isolated runs

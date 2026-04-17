@@ -503,7 +503,7 @@ export function createOpenClawCodingTools(options?: {
       options?.exec?.approvalRunningNoticeMs ?? execConfig.approvalRunningNoticeMs,
     notifyOnExit: options?.exec?.notifyOnExit ?? execConfig.notifyOnExit,
     notifyOnExitEmptySuccess:
-      options?.exec?.notifyOnExitEmptySuccess ?? execConfig.notifyOnExitEmptySuccess,
+      options?.exec?.notifyOnExitEmptySuccess ?? execConfig.notifyOnExitEmptySuccess ?? true,
     sandbox: sandbox
       ? {
           containerName: sandbox.containerName,

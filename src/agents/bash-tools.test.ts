@@ -308,9 +308,9 @@ type NotifyNoopCase = LabeledCase & {
   notifyOnExitEmptySuccess: boolean;
 };
 const NOOP_NOTIFY_CASES: NotifyNoopCase[] = [
-  withLabel("default behavior skips no-op completion events", { notifyOnExitEmptySuccess: false }),
-  withLabel("explicitly enabling no-op completion emits completion events", {
-    notifyOnExitEmptySuccess: true,
+  withLabel("default behavior emits no-op completion events", { notifyOnExitEmptySuccess: true }),
+  withLabel("explicit opt-out skips no-op completion events", {
+    notifyOnExitEmptySuccess: false,
   }),
 ];
 const DISALLOWED_ELEVATION_CASES: DisallowedElevationCase[] = [
@@ -462,9 +462,7 @@ const runLongLogExpectationCase = async ({
   expectTextContainsValues(snapshot.text, mustNotContain, false);
 };
 const runNotifyNoopCase = async ({ label, notifyOnExitEmptySuccess }: NotifyNoopCase) => {
-  const tool = createNotifyOnExitExecTool(
-    notifyOnExitEmptySuccess ? { notifyOnExitEmptySuccess: true } : {},
-  );
+  const tool = createNotifyOnExitExecTool({ notifyOnExitEmptySuccess });
 
   const { status } = await runBackgroundCommandToCompletion(tool, COMMAND_NOOP);
   expect(status).toBe(PROCESS_STATUS_COMPLETED);
@@ -478,7 +476,7 @@ describe("tool descriptions", () => {
     const processWithCron = createProcessTool({ hasCronTool: true });
 
     expect(execWithCron.description).toContain(
-      "rely on automatic completion wake when it is enabled and the command emits output or fails; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
+      "rely on automatic completion wake when it is enabled; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
     );
     expect(processWithCron.description).toContain(
       "completion confirmation when automatic completion wake is unavailable.",

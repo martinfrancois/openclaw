@@ -1,10 +1,31 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
+import { resetProcessRegistryForTests } from "./bash-process-registry.js";
 import { createOpenClawCodingTools } from "./pi-tools.js";
+
+const isWin = process.platform === "win32";
+const shortDelayCmd = isWin ? "Start-Sleep -Milliseconds 4" : "sleep 0.004";
+
+async function waitForNotifyEvent(
+  sessionKey: string,
+  predicate: (events: string[]) => boolean,
+  timeoutMs = isWin ? 12_000 : 5_000,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const events = peekSystemEvents(sessionKey);
+    if (predicate(events)) {
+      return events;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  return peekSystemEvents(sessionKey);
+}
 
 function createExecHostDefaultsConfig(
   agents: Array<{ id: string; execHost?: "auto" | "gateway" | "sandbox" }>,
@@ -37,6 +58,13 @@ function createExecHostDefaultsConfig(
 describe("Agent-specific exec tool defaults", () => {
   beforeEach(() => {
     setActivePluginRegistry(createSessionConversationTestRegistry());
+    resetSystemEventsForTest();
+    resetProcessRegistryForTests();
+  });
+
+  afterEach(() => {
+    resetSystemEventsForTest();
+    resetProcessRegistryForTests();
   });
 
   it("should run exec synchronously when process is denied", async () => {
@@ -178,5 +206,68 @@ describe("Agent-specific exec tool defaults", () => {
     });
     const details = result?.details as { status?: string } | undefined;
     expect(details?.status).toBe("completed");
+  });
+
+  it("notifies on quiet background success by default for agent exec tools", async () => {
+    const sessionKey = "agent:main:main";
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          exec: {
+            host: "gateway",
+            security: "full",
+            ask: "off",
+          },
+        },
+      },
+      sessionKey,
+      workspaceDir: "/tmp/test-main-background-notify",
+      agentDir: "/tmp/agent-main-background-notify",
+    });
+    const execTool = tools.find((tool) => tool.name === "exec");
+    expect(execTool).toBeDefined();
+
+    const result = await execTool!.execute("call-main-background-notify", {
+      command: shortDelayCmd,
+      background: true,
+    });
+    const details = result?.details as { status?: string } | undefined;
+    expect(details?.status).toBe("running");
+
+    const events = await waitForNotifyEvent(sessionKey, (items) =>
+      items.some((event) => event.includes("Exec completed")),
+    );
+    expect(events.some((event) => event.includes("Exec completed"))).toBe(true);
+  });
+
+  it("still allows explicit opt-out for quiet background success notifications", async () => {
+    const sessionKey = "agent:main:main";
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          exec: {
+            host: "gateway",
+            security: "full",
+            ask: "off",
+            notifyOnExitEmptySuccess: false,
+          },
+        },
+      },
+      sessionKey,
+      workspaceDir: "/tmp/test-main-background-notify-disabled",
+      agentDir: "/tmp/agent-main-background-notify-disabled",
+    });
+    const execTool = tools.find((tool) => tool.name === "exec");
+    expect(execTool).toBeDefined();
+
+    const result = await execTool!.execute("call-main-background-notify-disabled", {
+      command: shortDelayCmd,
+      background: true,
+    });
+    const details = result?.details as { status?: string } | undefined;
+    expect(details?.status).toBe("running");
+
+    const events = await waitForNotifyEvent(sessionKey, () => false, 150);
+    expect(events.some((event) => event.includes("Exec completed"))).toBe(false);
   });
 });

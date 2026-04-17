@@ -234,9 +234,15 @@ async function waitForNotifyEvent(sessionId: string, sessionKey = DEFAULT_NOTIFY
   };
 }
 
-async function startBackgroundCommand(tool: ExecToolInstance, command: string) {
+async function startBackgroundCommandWithResult(tool: ExecToolInstance, command: string) {
   const result = await executeExecCommand(tool, command, { background: true });
-  return requireRunningSessionId(result);
+  const sessionId = requireRunningSessionId(result);
+  return { result, sessionId };
+}
+
+async function startBackgroundCommand(tool: ExecToolInstance, command: string) {
+  const { sessionId } = await startBackgroundCommandWithResult(tool, command);
+  return sessionId;
 }
 
 async function expectNotifyOnExitWake(tool: ExecToolInstance, expected: Record<string, unknown>) {
@@ -469,6 +475,30 @@ const runNotifyNoopCase = async ({ label, notifyOnExitEmptySuccess }: NotifyNoop
   const events = peekSystemEvents(DEFAULT_NOTIFY_SESSION_KEY);
   expectNotifyNoopEvents(events, notifyOnExitEmptySuccess, label);
 };
+
+describe("background follow-up hints", () => {
+  it("mentions quiet-success auto follow-up when enabled", async () => {
+    const tool = createNotifyOnExitExecTool({ notifyOnExitEmptySuccess: true });
+
+    const { result, sessionId } = await startBackgroundCommandWithResult(tool, yieldDelayCmd);
+
+    expect(readTextContent(result.content) ?? "").toContain(
+      "Quiet successful exits will also notify automatically in this session.",
+    );
+    await waitForCompletion(sessionId);
+  });
+
+  it("warns that quiet-success auto follow-up may be absent when disabled", async () => {
+    const tool = createNotifyOnExitExecTool({ notifyOnExitEmptySuccess: false });
+
+    const { result, sessionId } = await startBackgroundCommandWithResult(tool, yieldDelayCmd);
+
+    expect(readTextContent(result.content) ?? "").toContain(
+      "Failures still notify automatically, but quiet successful exits without output may not send an automatic follow-up in this session.",
+    );
+    await waitForCompletion(sessionId);
+  });
+});
 
 describe("tool descriptions", () => {
   it("adds cron-specific deferred follow-up guidance only when cron is available", () => {

@@ -651,6 +651,19 @@ function rejectDetachedShellBackgrounding(command: string): void {
   );
 }
 
+function buildBackgroundExecFollowUpHint(notifyOnExitEmptySuccess: boolean): string {
+  if (notifyOnExitEmptySuccess) {
+    return (
+      "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
+      "Quiet successful exits will also notify automatically in this session."
+    );
+  }
+  return (
+    "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
+    "Failures still notify automatically, but quiet successful exits without output may not send an automatic follow-up in this session."
+  );
+}
+
 function isInterpreterExecutable(executable: string | undefined): boolean {
   if (!executable) {
     return false;
@@ -1809,7 +1822,7 @@ export function createExecTool(
                 type: "text",
                 text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
                   run.session.pid ?? "n/a"
-                }). Use process (list/poll/log/write/kill/clear/remove) for follow-up.`,
+                }). ${buildBackgroundExecFollowUpHint(notifyOnExitEmptySuccess)}`,
               },
             ],
             details: {

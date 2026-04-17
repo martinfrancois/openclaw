@@ -478,6 +478,9 @@ describe("tool descriptions", () => {
     expect(execWithCron.description).toContain(
       "rely on automatic completion wake when it is enabled; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
     );
+    expect(execWithCron.description).toContain(
+      "Do not rely on shell backgrounding with a trailing & or nohup; use exec background=true or yieldMs so OpenClaw can track completion.",
+    );
     expect(processWithCron.description).toContain(
       "completion confirmation when automatic completion wake is unavailable.",
     );
@@ -548,6 +551,18 @@ describe("exec tool backgrounding", () => {
     const sessions = await listProcessSessions(processTool);
     expect(hasSession(sessions, sessionId)).toBe(true);
     expect(sessions.find((s) => s.sessionId === sessionId)?.name).toBe(COMMAND_ECHO_HELLO);
+  });
+
+  it.skipIf(isWin)("rejects detached shell backgrounding without wait", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 &")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("allows shell backgrounding when the command waits before exit", async () => {
+    const result = await executeExecCommand(execTool, "sleep 0.004 & wait");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
   });
 
   it.each<DisallowedElevationCase>(DISALLOWED_ELEVATION_CASES)(

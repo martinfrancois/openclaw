@@ -18,6 +18,7 @@ export function describeExecTool(params?: { agentId?: string; hasCronTool?: bool
     "Execute shell commands with background continuation for work that starts now.",
     "Use yieldMs/background to continue later via process tool.",
     "For long-running work started now, rely on automatic completion wake when it is enabled; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
+    "Do not rely on shell backgrounding with a trailing & or nohup; use exec background=true or yieldMs so OpenClaw can track completion.",
     params?.hasCronTool
       ? "Do not use exec sleep or delay loops for reminders or deferred follow-ups; use cron instead."
       : undefined,

@@ -555,112 +555,26 @@ function splitShellSegmentsOutsideQuotes(
   return segments;
 }
 
-function hasDetachedShellBackgrounding(segment: string): boolean {
-  let token = "";
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-  let sawBackgroundOperator = false;
-  let sawWaitAfterBackground = false;
-
-  const flushToken = () => {
-    const lower = token.trim().toLowerCase();
-    if (sawBackgroundOperator && lower === "wait") {
-      sawWaitAfterBackground = true;
-    }
-    token = "";
-  };
-
-  for (let i = 0; i < segment.length; i += 1) {
-    const ch = segment[i];
-    const next = segment[i + 1];
-
-    if (escaped) {
-      token += ch;
-      escaped = false;
-      continue;
-    }
-
-    if (!inSingle && ch === "\\") {
-      token += ch;
-      escaped = true;
-      continue;
-    }
-
-    if (inSingle) {
-      token += ch;
-      if (ch === "'") {
-        inSingle = false;
-      }
-      continue;
-    }
-
-    if (inDouble) {
-      token += ch;
-      if (ch === '"') {
-        inDouble = false;
-      }
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-      token += ch;
-      continue;
-    }
-
-    if (ch === '"') {
-      inDouble = true;
-      token += ch;
-      continue;
-    }
-
-    if (ch === "&") {
-      if (next === "&") {
-        flushToken();
-        i += 1;
-        continue;
-      }
-      flushToken();
-      sawBackgroundOperator = true;
-      continue;
-    }
-
-    if (/\s/u.test(ch) || ch === "|" || ch === ";" || ch === "(" || ch === ")") {
-      flushToken();
-      continue;
-    }
-
-    token += ch;
-  }
-
-  flushToken();
-  return sawBackgroundOperator && !sawWaitAfterBackground;
-}
-
-function rejectDetachedShellBackgrounding(command: string): void {
-  const hasDetachedSegment = splitShellSegmentsOutsideQuotes(command, {
-    splitPipes: false,
-  }).some((segment) => hasDetachedShellBackgrounding(segment));
-  if (!hasDetachedSegment) {
-    return;
-  }
-
-  throw new Error(
-    "exec preflight: detached shell backgrounding detected. Use exec background=true or yieldMs so OpenClaw can register a pollable process session, and keep shell-managed background jobs paired with wait before the shell exits.",
-  );
-}
-
-function buildBackgroundExecFollowUpHint(notifyOnExitEmptySuccess: boolean): string {
-  if (notifyOnExitEmptySuccess) {
+function buildBackgroundExecFollowUpHint(params: {
+  notifyOnExit: boolean;
+  notifyOnExitEmptySuccess: boolean;
+}): string {
+  if (!params.notifyOnExit) {
     return (
       "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
-      "Quiet successful exits will also notify automatically in this session."
+      "Completion notifications are disabled for this exec session, so wait for process status instead of an automatic follow-up."
+    );
+  }
+
+  if (params.notifyOnExitEmptySuccess) {
+    return (
+      "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
+      "Confirm completion with process because this session can still finish without another user-visible message."
     );
   }
   return (
     "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
-    "Failures still notify automatically, but quiet successful exits without output may not send an automatic follow-up in this session."
+    "Quiet successful exits without output can finish without another user-visible message, so confirm completion with process."
   );
 }
 
@@ -1430,7 +1344,7 @@ export function createExecTool(
     );
   }
   const notifyOnExit = defaults?.notifyOnExit !== false;
-  const notifyOnExitEmptySuccess = defaults?.notifyOnExitEmptySuccess !== false;
+  const notifyOnExitEmptySuccess = defaults?.notifyOnExitEmptySuccess === true;
   const notifySessionKey = normalizeOptionalString(defaults?.sessionKey);
   const notifyDeliveryContext = normalizeDeliveryContext({
     channel: defaults?.messageProvider,
@@ -1766,7 +1680,6 @@ export function createExecTool(
       const usePty = params.pty === true && !sandbox;
 
       // Preflight: catch common model failure modes before we execute and burn tokens in cron loops.
-      rejectDetachedShellBackgrounding(params.command);
       await validateScriptFileForShellBleed({ command: params.command, workdir });
 
       const run = await runExecProcess({
@@ -1822,7 +1735,10 @@ export function createExecTool(
                 type: "text",
                 text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
                   run.session.pid ?? "n/a"
-                }). ${buildBackgroundExecFollowUpHint(notifyOnExitEmptySuccess)}`,
+                }). ${buildBackgroundExecFollowUpHint({
+                  notifyOnExit,
+                  notifyOnExitEmptySuccess,
+                })}`,
               },
             ],
             details: {

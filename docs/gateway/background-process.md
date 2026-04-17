@@ -30,13 +30,12 @@ Behavior:
 - If the `process` tool is disallowed, `exec` runs synchronously and ignores `yieldMs`/`background`.
 - Spawned exec commands receive `OPENCLAW_SHELL=exec` for context-aware shell/profile rules.
 - For long-running work that starts now, start it once and rely on automatic
-  completion wake when it is enabled.
-- If automatic completion wake is unavailable, use `process` to confirm
-  completion.
-- Do not emulate reminders or delayed follow-ups with `sleep` loops, repeated
-  polling, or shell-detached backgrounding such as trailing `&` / `nohup`;
-  use cron for future work and `background: true` / `yieldMs` for work that
-  should keep running after this turn.
+  completion wake when it is enabled and the command emits output or fails.
+- If automatic completion wake is unavailable, or you need quiet-success
+  confirmation for a command that exited cleanly without output, use `process`
+  to confirm completion.
+- Do not emulate reminders or delayed follow-ups with `sleep` loops or repeated
+  polling; use cron for future work.
 
 ## Child process bridging
 
@@ -55,7 +54,7 @@ Config (preferred):
 - `tools.exec.timeoutSec` (default 1800)
 - `tools.exec.cleanupMs` (default 1800000)
 - `tools.exec.notifyOnExit` (default true): enqueue a system event + request heartbeat when a backgrounded exec exits.
-- `tools.exec.notifyOnExitEmptySuccess` (default true): when true, also enqueue completion events for successful backgrounded runs that produced no output.
+- `tools.exec.notifyOnExitEmptySuccess` (default false): when true, also enqueue completion events for successful backgrounded runs that produced no output.
 
 ## process tool
 

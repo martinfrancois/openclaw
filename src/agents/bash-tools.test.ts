@@ -482,9 +482,9 @@ describe("background follow-up hints", () => {
 
     const { result, sessionId } = await startBackgroundCommandWithResult(tool, yieldDelayCmd);
 
-    expect(readTextContent(result.content) ?? "").toContain(
-      "Quiet successful exits will also notify automatically in this session.",
-    );
+    const text = readTextContent(result.content) ?? "";
+    expect(text).toContain("Confirm completion with process");
+    expect(text).toContain("finish without another user-visible message");
     await waitForCompletion(sessionId);
   });
 
@@ -493,9 +493,9 @@ describe("background follow-up hints", () => {
 
     const { result, sessionId } = await startBackgroundCommandWithResult(tool, yieldDelayCmd);
 
-    expect(readTextContent(result.content) ?? "").toContain(
-      "Failures still notify automatically, but quiet successful exits without output may not send an automatic follow-up in this session.",
-    );
+    const text = readTextContent(result.content) ?? "";
+    expect(text).toContain("Quiet successful exits without output can finish");
+    expect(text).toContain("confirm completion with process");
     await waitForCompletion(sessionId);
   });
 });
@@ -506,7 +506,7 @@ describe("tool descriptions", () => {
     const processWithCron = createProcessTool({ hasCronTool: true });
 
     expect(execWithCron.description).toContain(
-      "rely on automatic completion wake when it is enabled; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
+      "rely on automatic completion wake when it is enabled and the command emits output or fails; otherwise use process to confirm completion. Use process whenever you need logs, status, input, or intervention.",
     );
     expect(execWithCron.description).toContain(
       "Do not rely on shell backgrounding with a trailing & or nohup; use exec background=true or yieldMs so OpenClaw can track completion.",
@@ -581,18 +581,6 @@ describe("exec tool backgrounding", () => {
     const sessions = await listProcessSessions(processTool);
     expect(hasSession(sessions, sessionId)).toBe(true);
     expect(sessions.find((s) => s.sessionId === sessionId)?.name).toBe(COMMAND_ECHO_HELLO);
-  });
-
-  it.skipIf(isWin)("rejects detached shell backgrounding without wait", async () => {
-    await expect(executeExecCommand(execTool, "sleep 0.004 &")).rejects.toThrow(
-      /detached shell backgrounding detected/i,
-    );
-  });
-
-  it.skipIf(isWin)("allows shell backgrounding when the command waits before exit", async () => {
-    const result = await executeExecCommand(execTool, "sleep 0.004 & wait");
-
-    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
   });
 
   it.each<DisallowedElevationCase>(DISALLOWED_ELEVATION_CASES)(
@@ -704,6 +692,32 @@ describe("exec notifyOnExit", () => {
     await expectNotifyOnExitWake(createNotifyOnExitExecTool({ sessionKey: "global" }), {
       reason: "exec-event",
     });
+  });
+
+  it("tells users to poll with process when notifyOnExit is disabled", async () => {
+    const tool = createTestExecTool({
+      allowBackground: true,
+      backgroundMs: 0,
+      notifyOnExit: false,
+    });
+
+    const { result } = await startBackgroundCommandWithResult(tool, echoAfterDelay("notify"));
+    const text = readTextContent(result.content) ?? "";
+
+    expect(text).toContain("Completion notifications are disabled for this exec session");
+    expect(text).not.toContain("notify automatically");
+  });
+
+  it("does not promise a guaranteed automatic follow-up when notifyOnExit is enabled", async () => {
+    const { result } = await startBackgroundCommandWithResult(
+      createNotifyOnExitExecTool({ notifyOnExitEmptySuccess: true }),
+      echoAfterDelay("notify"),
+    );
+    const text = readTextContent(result.content) ?? "";
+
+    expect(text).toContain("Confirm completion with process");
+    expect(text).not.toContain("automatic completion notice");
+    expect(text).not.toContain("will also notify automatically");
   });
 
   it.each<NotifyNoopCase>(NOOP_NOTIFY_CASES)("$label", runNotifyNoopCase);

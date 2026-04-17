@@ -86,7 +86,6 @@ export function resolveHeartbeatDeliveryTarget(params: {
   entry?: SessionEntry;
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   turnSource?: DeliveryContext;
-  allowAsyncWakeFallbackToLast?: boolean;
 }): OutboundTarget {
   const { cfg, entry } = params;
   const heartbeat = params.heartbeat ?? cfg.agents?.defaults?.heartbeat;
@@ -99,10 +98,6 @@ export function resolveHeartbeatDeliveryTarget(params: {
     if (normalized) {
       target = normalized;
     }
-  }
-
-  if (target === "none" && params.allowAsyncWakeFallbackToLast) {
-    target = "last";
   }
 
   if (target === "none") {

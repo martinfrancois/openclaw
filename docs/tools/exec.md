@@ -51,12 +51,9 @@ Notes:
   effective `workdir` boundary. If a script path resolves outside `workdir`, preflight is skipped for
   that file.
 - For long-running work that starts now, start it once and rely on automatic
-  completion wake when it is enabled.
+  completion wake when it is enabled and the command emits output or fails.
   Use `process` for logs, status, input, or intervention; do not emulate
-  scheduling with sleep loops, timeout loops, repeated polling, or shell-detached
-  backgrounding such as trailing `&` / `nohup`.
-- If the work should continue after this turn, prefer `background: true` or
-  `yieldMs` so OpenClaw can track the process and report completion later.
+  scheduling with sleep loops, timeout loops, or repeated polling.
 - For work that should happen later or on a schedule, use cron instead of
   `exec` sleep/delay patterns.
 

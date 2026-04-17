@@ -5,7 +5,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
-import { resetProcessRegistryForTests } from "./bash-process-registry.js";
+import { getFinishedSession, resetProcessRegistryForTests } from "./bash-process-registry.js";
 import { createOpenClawCodingTools } from "./pi-tools.js";
 
 const isWin = process.platform === "win32";
@@ -25,6 +25,20 @@ async function waitForNotifyEvent(
     await new Promise((resolve) => setTimeout(resolve, 15));
   }
   return peekSystemEvents(sessionKey);
+}
+
+async function waitForFinishedProcessSession(
+  sessionId: string,
+  timeoutMs = isWin ? 12_000 : 5_000,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (getFinishedSession(sessionId)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  throw new Error(`Timed out waiting for process session ${sessionId} to finish`);
 }
 
 function createExecHostDefaultsConfig(
@@ -208,7 +222,7 @@ describe("Agent-specific exec tool defaults", () => {
     expect(details?.status).toBe("completed");
   });
 
-  it("notifies on quiet background success by default for agent exec tools", async () => {
+  it("does not notify on quiet background success by default for agent exec tools", async () => {
     const sessionKey = "agent:main:main";
     const tools = createOpenClawCodingTools({
       config: {
@@ -228,6 +242,39 @@ describe("Agent-specific exec tool defaults", () => {
     expect(execTool).toBeDefined();
 
     const result = await execTool!.execute("call-main-background-notify", {
+      command: shortDelayCmd,
+      background: true,
+    });
+    const details = result?.details as { status?: string; sessionId?: string } | undefined;
+    expect(details?.status).toBe("running");
+    expect(details?.sessionId).toBeTruthy();
+
+    await waitForFinishedProcessSession(details?.sessionId ?? "");
+    const events = await waitForNotifyEvent(sessionKey, () => false, 150);
+    expect(events.some((event) => event.includes("Exec completed"))).toBe(false);
+  });
+
+  it("still allows explicit opt-in for quiet background success notifications", async () => {
+    const sessionKey = "agent:main:main";
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          exec: {
+            host: "gateway",
+            security: "full",
+            ask: "off",
+            notifyOnExitEmptySuccess: true,
+          },
+        },
+      },
+      sessionKey,
+      workspaceDir: "/tmp/test-main-background-notify-enabled",
+      agentDir: "/tmp/agent-main-background-notify-enabled",
+    });
+    const execTool = tools.find((tool) => tool.name === "exec");
+    expect(execTool).toBeDefined();
+
+    const result = await execTool!.execute("call-main-background-notify-enabled", {
       command: shortDelayCmd,
       background: true,
     });
@@ -264,9 +311,11 @@ describe("Agent-specific exec tool defaults", () => {
       command: shortDelayCmd,
       background: true,
     });
-    const details = result?.details as { status?: string } | undefined;
+    const details = result?.details as { status?: string; sessionId?: string } | undefined;
     expect(details?.status).toBe("running");
+    expect(details?.sessionId).toBeTruthy();
 
+    await waitForFinishedProcessSession(details?.sessionId ?? "");
     const events = await waitForNotifyEvent(sessionKey, () => false, 150);
     expect(events.some((event) => event.includes("Exec completed"))).toBe(false);
   });

@@ -490,81 +490,6 @@ function normalizeHeartbeatReply(
   return { shouldSkip: false, text: finalText, hasMedia };
 }
 
-function ensureTrailingPunctuation(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`;
-}
-
-function capitalizeFirst(text: string): string {
-  if (!text) {
-    return text;
-  }
-  return `${text[0]?.toUpperCase() ?? ""}${text.slice(1)}`;
-}
-
-function humanizeExecCompletionEvent(event: string): string {
-  const trimmed = event.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-
-  const completedOrFailedMatch =
-    /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code (-?\d+)|signal ([^)]+))\)(?: :: (.*))?$/i.exec(
-      trimmed,
-    );
-  if (completedOrFailedMatch) {
-    const exitCodeText = completedOrFailedMatch[4];
-    const signalText = completedOrFailedMatch[5];
-    const tailText = completedOrFailedMatch[6]?.trim();
-    const exitCode = exitCodeText ? Number.parseInt(exitCodeText, 10) : null;
-    const statusText = signalText
-      ? `The task failed (${signalText}).`
-      : exitCode === 0
-        ? "The task completed successfully (exit code 0)."
-        : `The task failed (exit code ${exitCodeText}).`;
-    return tailText ? `${statusText}\n\n${tailText}` : statusText;
-  }
-
-  const finishedMatch = /^exec finished:\s*(.*)$/i.exec(trimmed);
-  if (finishedMatch) {
-    const detail = finishedMatch[1]?.trim() ?? "";
-    if (!detail) {
-      return "The background task finished.";
-    }
-    const lowerDetail = normalizeLowercaseStringOrEmpty(detail);
-    if (lowerDetail.startsWith("blocked - ")) {
-      const blockedDetail = detail.slice("blocked - ".length).trim();
-      return blockedDetail
-        ? `The background task needs attention. ${ensureTrailingPunctuation(blockedDetail)}`
-        : "The background task needs attention.";
-    }
-    if (lowerDetail === "ok") {
-      return "The background task completed successfully.";
-    }
-    return ensureTrailingPunctuation(capitalizeFirst(detail));
-  }
-
-  return trimmed;
-}
-
-function resolveExecEventFallbackText(
-  pendingEvents: string[],
-  responsePrefix: string | undefined,
-): string | null {
-  const execEvents = pendingEvents
-    .filter(isExecCompletionEvent)
-    .map((event) => humanizeExecCompletionEvent(event))
-    .filter(Boolean);
-  if (execEvents.length === 0) {
-    return null;
-  }
-
-  const combined = execEvents.join("\n\n");
-  if (!responsePrefix || combined.startsWith(responsePrefix)) {
-    return combined;
-  }
-  return `${responsePrefix} ${combined}`;
-}
-
 type HeartbeatReasonFlags = {
   isExecEventReason: boolean;
   isCronEventReason: boolean;
@@ -840,9 +765,6 @@ export async function runHeartbeatOnce(opts: {
   }
 
   const previousUpdatedAt = entry?.updatedAt;
-  const hasPendingExecCompletion =
-    preflight.shouldInspectPendingEvents &&
-    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text));
 
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
@@ -854,10 +776,6 @@ export async function runHeartbeatOnce(opts: {
     cfg,
     entry,
     heartbeat,
-    // Async exec completions should be able to relay back to the last user even
-    // when heartbeat.target is "none", regardless of whether they are processed
-    // via an explicit exec-event run or a hook/wake run that drains the same queue.
-    allowAsyncWakeFallbackToLast: hasPendingExecCompletion,
     // Isolated heartbeat runs drain system events from their dedicated
     // `:heartbeat` session, not from the base session we peek during preflight.
     // Reusing base-session turnSource routing here can pin later isolated runs
@@ -1132,24 +1050,8 @@ export async function runHeartbeatOnce(opts: {
 
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const normalized = normalizeHeartbeatReply(replyPayload, responsePrefix, ackMaxChars);
-    const execEventFallbackText = hasExecCompletion
-      ? resolveExecEventFallbackText(
-          preflight.pendingEventEntries.map((event) => event.text),
-          responsePrefix,
-        )
-      : null;
     // For exec completion events, don't skip even if the response looks like HEARTBEAT_OK.
     // The model should be responding with exec results, not ack tokens.
-    // If it still returns HEARTBEAT_OK, fall back to the queued exec event text.
-    if (
-      hasExecCompletion &&
-      normalized.shouldSkip &&
-      !normalized.hasMedia &&
-      execEventFallbackText
-    ) {
-      normalized.text = execEventFallbackText;
-      normalized.shouldSkip = false;
-    }
     // If the reply stripped to empty for another reason, keep the original reply as a last resort.
     const execReplyFallbackText =
       hasExecCompletion && !normalized.text.trim() && replyPayload.text?.trim()

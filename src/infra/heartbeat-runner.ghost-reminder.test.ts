@@ -340,10 +340,10 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(sendTelegram).not.toHaveBeenCalled();
   });
 
-  it("relays exec-event completions to the last session when heartbeat target is none", async () => {
+  it("uses an internal-only exec prompt when delivery target is none", async () => {
     const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
       tmpPrefix: "openclaw-exec-internal-",
-      replyText: "Handled follow-up",
+      replyText: "Handled internally",
       reason: "exec-event",
       target: "none",
       enqueue: (sessionKey) => {
@@ -354,16 +354,14 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(result.status).toBe("ran");
     expect(calledCtx?.Provider).toBe("exec-event");
     expect(calledCtx?.ForceSenderIsOwnerFalse).toBe(true);
-    expect(calledCtx?.Body).toContain("Please relay the command output to the user");
-    expect(calledCtx?.Body).not.toContain("Handle the result internally");
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
+    expect(calledCtx?.Body).toContain("Handle the result internally");
+    expect(sendTelegram).not.toHaveBeenCalled();
   });
 
   it("classifies hook:wake exec completions as exec-event prompts", async () => {
     const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
       tmpPrefix: "openclaw-hook-exec-",
-      replyText: "Handled follow-up",
+      replyText: "Handled internally",
       reason: "hook:wake",
       target: "none",
       enqueue: (sessionKey) => {
@@ -374,10 +372,8 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(result.status).toBe("ran");
     expect(calledCtx?.Provider).toBe("exec-event");
     expect(calledCtx?.ForceSenderIsOwnerFalse).toBe(true);
-    expect(calledCtx?.Body).toContain("Please relay the command output to the user");
-    expect(calledCtx?.Body).not.toContain("Handle the result internally");
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
+    expect(calledCtx?.Body).toContain("Handle the result internally");
+    expect(sendTelegram).not.toHaveBeenCalled();
   });
 
   it("does not classify base-session hook:wake exec completions as exec-event prompts when isolated sessions are enabled", async () => {
@@ -399,52 +395,10 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(sendTelegram).not.toHaveBeenCalled();
   });
 
-  it("falls back to the exec event text when a wake run returns HEARTBEAT_OK", async () => {
-    const { result, sendTelegram, calledCtx, replyCallCount } = await runHeartbeatCase({
-      tmpPrefix: "openclaw-hook-exec-fallback-",
-      replyText: "HEARTBEAT_OK",
-      reason: "hook:wake",
-      enqueue: (sessionKey) => {
-        enqueueSystemEvent(
-          "exec finished: blocked - background task failed after waiting in the temp repo, with no file changes",
-          { sessionKey },
-        );
-      },
-    });
-
-    expect(result.status).toBe("ran");
-    expect(replyCallCount).toBe(1);
-    expect(calledCtx?.Provider).toBe("exec-event");
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram.mock.calls[0]?.[1]).toContain(
-      "The background task needs attention. background task failed after waiting in the temp repo, with no file changes.",
-    );
-    expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("HEARTBEAT_OK");
-  });
-
-  it("humanizes exec completion fallback text for successful exits", async () => {
-    const { result, sendTelegram, replyCallCount } = await runHeartbeatCase({
-      tmpPrefix: "openclaw-hook-exec-fallback-success-",
-      replyText: "HEARTBEAT_OK",
-      reason: "hook:wake",
-      enqueue: (sessionKey) => {
-        enqueueSystemEvent("Exec completed (reviewrun, code 0)", { sessionKey });
-      },
-    });
-
-    expect(result.status).toBe("ran");
-    expect(replyCallCount).toBe(1);
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram.mock.calls[0]?.[1]).toContain(
-      "The task completed successfully (exit code 0).",
-    );
-    expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("Exec completed (");
-  });
-
-  it("relays wake-triggered exec completions even when heartbeat target is none", async () => {
+  it("keeps wake-triggered exec completions internal when heartbeat target is none", async () => {
     const { result, sendTelegram, calledCtx, replyCallCount } = await runHeartbeatCase({
       tmpPrefix: "openclaw-hook-exec-target-none-",
-      replyText: "Handled follow-up",
+      replyText: "Handled internally",
       reason: "hook:wake",
       target: "none",
       enqueue: (sessionKey) => {
@@ -457,10 +411,8 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(result.status).toBe("ran");
     expect(replyCallCount).toBe(1);
     expect(calledCtx?.Provider).toBe("exec-event");
-    expect(calledCtx?.Body).toContain("Please relay the command output to the user");
-    expect(calledCtx?.Body).not.toContain("Handle the result internally");
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
+    expect(calledCtx?.Body).toContain("Handle the result internally");
+    expect(sendTelegram).not.toHaveBeenCalled();
   });
 
   it("forces owner downgrade for untrusted hook:wake system events", async () => {

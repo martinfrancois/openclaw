@@ -48,8 +48,8 @@ export function buildExecEventPrompt(opts?: { deliverToUser?: boolean }): string
   }
   return (
     "An async command you ran earlier has completed. The result is shown in the system messages above. " +
-    "Please relay the command output to the user in a helpful way. If the command succeeded, share the relevant output. " +
-    "If it failed, explain what went wrong."
+    "Please relay the command output to the user in a helpful way. Use plain language first: if it succeeded, say it completed successfully; if it failed, say it failed or hit an error. " +
+    "Keep technical details like exit codes as secondary detail in parentheses when useful."
   );
 }
 

@@ -48,7 +48,11 @@ describe("heartbeat event prompts", () => {
     {
       name: "builds user-relay exec prompt by default",
       opts: undefined,
-      expected: ["Please relay the command output to the user", "If it failed"],
+      expected: [
+        "Please relay the command output to the user",
+        "Use plain language first",
+        "exit codes as secondary detail",
+      ],
       unexpected: ["Handle the result internally"],
     },
     {

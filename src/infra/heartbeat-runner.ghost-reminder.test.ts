@@ -417,9 +417,28 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(calledCtx?.Provider).toBe("exec-event");
     expect(sendTelegram).toHaveBeenCalledTimes(1);
     expect(sendTelegram.mock.calls[0]?.[1]).toContain(
-      "exec finished: blocked - background task failed after waiting in the temp repo, with no file changes",
+      "The background task needs attention. background task failed after waiting in the temp repo, with no file changes.",
     );
     expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("HEARTBEAT_OK");
+  });
+
+  it("humanizes exec completion fallback text for successful exits", async () => {
+    const { result, sendTelegram, replyCallCount } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-hook-exec-fallback-success-",
+      replyText: "HEARTBEAT_OK",
+      reason: "hook:wake",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent("Exec completed (reviewrun, code 0)", { sessionKey });
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(replyCallCount).toBe(1);
+    expect(sendTelegram).toHaveBeenCalledTimes(1);
+    expect(sendTelegram.mock.calls[0]?.[1]).toContain(
+      "The task completed successfully (exit code 0).",
+    );
+    expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("Exec completed (");
   });
 
   it("relays wake-triggered exec completions even when heartbeat target is none", async () => {

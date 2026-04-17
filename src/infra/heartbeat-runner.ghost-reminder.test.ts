@@ -406,7 +406,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
       reason: "hook:wake",
       enqueue: (sessionKey) => {
         enqueueSystemEvent(
-          "exec finished: blocked - background coding task failed after waiting in the temp repo, with no file changes",
+          "exec finished: blocked - background task failed after waiting in the temp repo, with no file changes",
           { sessionKey },
         );
       },
@@ -417,7 +417,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(calledCtx?.Provider).toBe("exec-event");
     expect(sendTelegram).toHaveBeenCalledTimes(1);
     expect(sendTelegram.mock.calls[0]?.[1]).toContain(
-      "exec finished: blocked - background coding task failed after waiting in the temp repo, with no file changes",
+      "exec finished: blocked - background task failed after waiting in the temp repo, with no file changes",
     );
     expect(sendTelegram.mock.calls[0]?.[1]).not.toContain("HEARTBEAT_OK");
   });
@@ -429,7 +429,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
       reason: "hook:wake",
       target: "none",
       enqueue: (sessionKey) => {
-        enqueueSystemEvent("exec finished: blocked - background coding task needs attention", {
+        enqueueSystemEvent("exec finished: blocked - background task needs attention", {
           sessionKey,
         });
       },

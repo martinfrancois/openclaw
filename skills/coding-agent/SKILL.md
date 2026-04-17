@@ -273,7 +273,6 @@ git worktree remove /tmp/issue-99
 When you spawn coding agents in the background, keep the user in the loop.
 
 - Send 1 short message when you start (what's running + where).
-- If you promise a later update, you must also arrange a reliable wake path for that background task. Do this by appending an explicit `openclaw system event` instruction that covers both success and blocker/failure, or by polling the session yourself until you can send the update manually.
 - Then only update again when something changes:
   - a milestone completes (build finished, tests passed)
   - the agent asks a question / needs input
@@ -285,18 +284,15 @@ This prevents the user from seeing only "Agent failed before reply" and having n
 
 ---
 
-## Auto-Notify on Completion or Blocker
+## Auto-Notify on Completion
 
-For long-running background tasks, append a wake trigger to your prompt so OpenClaw gets notified immediately when the agent finishes or hits a blocker/failure (instead of waiting for the next heartbeat). If you told the user “I’ll update you,” this is required unless you are actively polling the session yourself. Use the standardized `exec finished:` prefix so the wake is treated as an async result that must be relayed back to the user.
+For long-running background tasks, append a wake trigger to your prompt so OpenClaw gets notified immediately when the agent finishes (instead of waiting for the next heartbeat):
 
 ```
 ... your task here.
 
-When completely finished, run:
-openclaw system event --text "exec finished: completed - [brief summary of what was built]" --mode now
-
-If you hit a blocker, failure, or cannot continue, run:
-openclaw system event --text "exec finished: blocked - [brief reason you need me to know]" --mode now
+When completely finished, run this command to notify me:
+openclaw system event --text "Done: [brief summary of what was built]" --mode now
 ```
 
 **Example:**
@@ -304,11 +300,10 @@ openclaw system event --text "exec finished: blocked - [brief reason you need me
 ```bash
 bash pty:true workdir:~/project background:true command:"codex --yolo exec 'Build a REST API for todos.
 
-When completely finished, run: openclaw system event --text \"exec finished: completed - Built todos REST API with CRUD endpoints\" --mode now
-If you hit a blocker or fail before finishing, run: openclaw system event --text \"exec finished: blocked - REST API task failed or needs input\" --mode now'"
+When completely finished, run: openclaw system event --text \"Done: Built todos REST API with CRUD endpoints\" --mode now'"
 ```
 
-This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 minutes. The blocker/failure path matters just as much as the success path; otherwise a background task can go silent after you already promised the user an update.
+This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 minutes.
 
 ---
 

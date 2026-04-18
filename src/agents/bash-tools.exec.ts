@@ -1679,7 +1679,8 @@ export function createExecTool(
       const getWarningText = () => (warnings.length ? `${warnings.join("\n")}\n\n` : "");
       const usePty = params.pty === true && !sandbox;
 
-      // Preflight: catch common model failure modes before we execute and burn tokens in cron loops.
+      // Preflight: catch a common model failure mode (shell syntax leaking into Python/JS sources)
+      // before we execute and burn tokens in cron loops.
       await validateScriptFileForShellBleed({ command: params.command, workdir });
 
       const run = await runExecProcess({

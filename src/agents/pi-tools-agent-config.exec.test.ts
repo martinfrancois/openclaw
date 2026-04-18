@@ -287,7 +287,7 @@ describe("Agent-specific exec tool defaults", () => {
     expect(events.some((event) => event.includes("Exec completed"))).toBe(true);
   });
 
-  it("still allows explicit opt-out for quiet background success notifications", async () => {
+  it("keeps quiet background success notifications disabled when explicitly set to false", async () => {
     const sessionKey = "agent:main:main";
     const tools = createOpenClawCodingTools({
       config: {

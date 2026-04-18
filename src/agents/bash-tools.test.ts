@@ -30,6 +30,7 @@ const defaultShell = isWin
   ? undefined
   : process.env.OPENCLAW_TEST_SHELL || resolveShellFromPath("bash") || process.env.SHELL || "sh";
 // PowerShell: Start-Sleep for delays, ; for command separation, $null for null device
+// Keep this barely asynchronous so tests exercise the real background-session path without slowing the suite.
 const shortDelayCmd = isWin ? "Start-Sleep -Milliseconds 4" : "sleep 0.004";
 const yieldDelayCmd = isWin ? "Start-Sleep -Milliseconds 16" : "sleep 0.016";
 const POLL_INTERVAL_MS = isWin ? 15 : 2;
@@ -314,9 +315,9 @@ type NotifyNoopCase = LabeledCase & {
   notifyOnExitEmptySuccess: boolean;
 };
 const NOOP_NOTIFY_CASES: NotifyNoopCase[] = [
-  withLabel("default behavior emits no-op completion events", { notifyOnExitEmptySuccess: true }),
-  withLabel("explicit opt-out skips no-op completion events", {
-    notifyOnExitEmptySuccess: false,
+  withLabel("default behavior skips no-op completion events", { notifyOnExitEmptySuccess: false }),
+  withLabel("explicitly enabling no-op completion emits completion events", {
+    notifyOnExitEmptySuccess: true,
   }),
 ];
 const DISALLOWED_ELEVATION_CASES: DisallowedElevationCase[] = [
@@ -470,10 +471,12 @@ const runLongLogExpectationCase = async ({
 const runNotifyNoopCase = async ({ label, notifyOnExitEmptySuccess }: NotifyNoopCase) => {
   const tool = createNotifyOnExitExecTool({ notifyOnExitEmptySuccess });
 
-  const { status } = await runBackgroundCommandToCompletion(tool, COMMAND_NOOP);
+  const { status, sessionId } = await runBackgroundCommandToCompletion(tool, COMMAND_NOOP);
   expect(status).toBe(PROCESS_STATUS_COMPLETED);
-  const events = peekSystemEvents(DEFAULT_NOTIFY_SESSION_KEY);
-  expectNotifyNoopEvents(events, notifyOnExitEmptySuccess, label);
+  const sessionEvents = peekSystemEvents(DEFAULT_NOTIFY_SESSION_KEY).filter((event) =>
+    event.includes(sessionId.slice(0, 8)),
+  );
+  expectNotifyNoopEvents(sessionEvents, notifyOnExitEmptySuccess, label);
 };
 
 describe("background follow-up hints", () => {

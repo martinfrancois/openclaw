@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import { formatErrorMessage } from "../infra/errors.js";
 import {
   type ExecApprovalsFile,
   type ExecAsk,
@@ -16,6 +17,9 @@ import {
 } from "../infra/exec-inline-eval.js";
 import { buildNodeShellCommand } from "../infra/node-shell.js";
 import { parsePreparedSystemRunPayload } from "../infra/system-run-approval-context.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { normalizeDeliveryContext } from "../utils/delivery-context.js";
+import { tail } from "./bash-process-registry.js";
 import {
   buildExecApprovalRequesterContext,
   buildExecApprovalTurnSourceContext,
@@ -53,8 +57,125 @@ export type ExecuteNodeHostCommandParams = {
   approvalRunningNoticeMs: number;
   warnings: string[];
   notifySessionKey?: string;
+  notifyOnExit?: boolean;
   trustedSafeBinDirs?: ReadonlySet<string>;
 };
+
+function isPendingNodeInvokeTimeout(error: unknown): boolean {
+  const candidate =
+    error && typeof error === "object"
+      ? (error as {
+          code?: unknown;
+          gatewayCode?: unknown;
+          details?: unknown;
+        })
+      : null;
+  const code = (normalizeOptionalString(candidate?.code) ?? "").toUpperCase();
+  const gatewayCode = (normalizeOptionalString(candidate?.gatewayCode) ?? "").toUpperCase();
+  const nodeError =
+    candidate?.details && typeof candidate.details === "object"
+      ? ((candidate.details as { nodeError?: unknown }).nodeError as
+          | {
+              code?: unknown;
+            }
+          | undefined)
+      : undefined;
+  const nodeErrorCode = (normalizeOptionalString(nodeError?.code) ?? "").toUpperCase();
+  if (code === "TIMEOUT" || gatewayCode === "TIMEOUT" || nodeErrorCode === "TIMEOUT") {
+    return true;
+  }
+  const message = formatErrorMessage(error).toLowerCase();
+  return message.includes("gateway timeout after") || message.includes("gateway request timeout");
+}
+
+function isTerminalApprovedNodeInvokeFailure(error: unknown): boolean {
+  const candidate =
+    error && typeof error === "object"
+      ? (error as {
+          code?: unknown;
+          gatewayCode?: unknown;
+          message?: unknown;
+          details?: unknown;
+        })
+      : null;
+  const nodeError =
+    candidate?.details && typeof candidate.details === "object"
+      ? ((candidate.details as { nodeError?: unknown }).nodeError as
+          | {
+              code?: unknown;
+              message?: unknown;
+            }
+          | undefined)
+      : undefined;
+  const haystacks = [
+    normalizeOptionalString(candidate?.code),
+    normalizeOptionalString(candidate?.gatewayCode),
+    normalizeOptionalString(candidate?.message),
+    normalizeOptionalString(nodeError?.code),
+    normalizeOptionalString(nodeError?.message),
+    formatErrorMessage(error),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toUpperCase());
+  return haystacks.some((value) => value.includes("SYSTEM_RUN_DENIED"));
+}
+
+function isPendingQueuedNodeInvoke(error: unknown): boolean {
+  const candidate =
+    error && typeof error === "object"
+      ? (error as {
+          code?: unknown;
+          gatewayCode?: unknown;
+          message?: unknown;
+          details?: unknown;
+        })
+      : null;
+  const details =
+    candidate?.details && typeof candidate.details === "object"
+      ? (candidate.details as { code?: unknown; nodeError?: unknown; retryable?: unknown })
+      : undefined;
+  const nodeError =
+    details?.nodeError && typeof details.nodeError === "object"
+      ? (details.nodeError as { code?: unknown; message?: unknown })
+      : undefined;
+  const haystacks = [
+    normalizeOptionalString(candidate?.code),
+    normalizeOptionalString(candidate?.gatewayCode),
+    normalizeOptionalString(candidate?.message),
+    normalizeOptionalString(details?.code),
+    normalizeOptionalString(nodeError?.code),
+    normalizeOptionalString(nodeError?.message),
+    formatErrorMessage(error),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toUpperCase());
+  return haystacks.some((value) => value.includes("QUEUED_UNTIL_FOREGROUND"));
+}
+
+function summarizeApprovedNodeInvokeResult(params: {
+  raw: unknown;
+  nodeId: string;
+  approvalId: string;
+}): string {
+  const payload =
+    params.raw && typeof params.raw === "object"
+      ? (params.raw as { payload?: unknown }).payload
+      : undefined;
+  const payloadObj =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const stdout = typeof payloadObj.stdout === "string" ? payloadObj.stdout : "";
+  const stderr = typeof payloadObj.stderr === "string" ? payloadObj.stderr : "";
+  const errorText = typeof payloadObj.error === "string" ? payloadObj.error : "";
+  const timedOut = payloadObj.timedOut === true;
+  const exitCode = typeof payloadObj.exitCode === "number" ? payloadObj.exitCode : undefined;
+  const output = normalizeNotifyOutput(
+    tail([stdout, stderr, errorText].filter(Boolean).join("\n"), DEFAULT_NOTIFY_TAIL_CHARS),
+  );
+  const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
+  return output
+    ? `Exec finished (node=${params.nodeId} id=${params.approvalId}, ${exitLabel})\n${output}`
+    : `Exec finished (node=${params.nodeId} id=${params.approvalId}, ${exitLabel})`;
+}
 
 export async function executeNodeHostCommand(
   params: ExecuteNodeHostCommandParams,
@@ -204,13 +325,27 @@ export async function executeNodeHostCommand(
     (typeof params.timeoutSec === "number" ? params.timeoutSec : params.defaultTimeoutSec) * 1000 +
       5_000,
   );
+  const notifyOnExit = params.notifyOnExit !== false;
+  const notifyDeliveryContext = normalizeDeliveryContext({
+    channel: params.turnSourceChannel,
+    to: params.turnSourceTo,
+    accountId: params.turnSourceAccountId,
+    threadId: params.turnSourceThreadId,
+  });
+  const defaultRunId = crypto.randomUUID();
   const buildInvokeParams = (
     approvedByAsk: boolean,
     approvalDecision: "allow-once" | "allow-always" | null,
     runId?: string,
-    suppressNotifyOnExit?: boolean,
-  ) =>
-    ({
+    options?: {
+      includeDeliveryContext?: boolean;
+      suppressNotifyOnExit?: boolean;
+    },
+  ) => {
+    const effectiveRunId = runId ?? defaultRunId;
+    const includeDeliveryContext = options?.includeDeliveryContext === true;
+    const suppressNotifyOnExit = options?.suppressNotifyOnExit === true;
+    return {
       nodeId,
       command: "system.run",
       params: {
@@ -222,16 +357,18 @@ export async function executeNodeHostCommand(
         timeoutMs: typeof params.timeoutSec === "number" ? params.timeoutSec * 1000 : undefined,
         agentId: runAgentId,
         sessionKey: runSessionKey,
+        ...(includeDeliveryContext ? { deliveryContext: notifyDeliveryContext } : {}),
         approved: approvedByAsk,
         approvalDecision:
           approvalDecision === "allow-always" && inlineEvalHit !== null
             ? "allow-once"
             : (approvalDecision ?? undefined),
-        runId: runId ?? undefined,
-        suppressNotifyOnExit: suppressNotifyOnExit === true ? true : undefined,
+        runId: effectiveRunId,
+        suppressNotifyOnExit: suppressNotifyOnExit ? true : undefined,
       },
       idempotencyKey: crypto.randomUUID(),
-    }) satisfies Record<string, unknown>;
+    } satisfies Record<string, unknown>;
+  };
 
   let inlineApprovedByAsk = false;
   let inlineApprovalDecision: "allow-once" | "allow-always" | null = null;
@@ -373,31 +510,53 @@ export async function executeNodeHostCommand(
           const raw = await callGatewayTool(
             "node.invoke",
             { timeoutMs: invokeTimeoutMs },
-            buildInvokeParams(approvedByAsk, approvalDecision, approvalId, true),
+            buildInvokeParams(approvedByAsk, approvalDecision, approvalId, {
+              includeDeliveryContext: notifyOnExit,
+              suppressNotifyOnExit: !notifyOnExit,
+            }),
           );
-          const payload =
-            raw?.payload && typeof raw.payload === "object"
-              ? (raw.payload as {
-                  stdout?: string;
-                  stderr?: string;
-                  error?: string | null;
-                  exitCode?: number | null;
-                  timedOut?: boolean;
-                })
-              : {};
-          const combined = [payload.stdout, payload.stderr, payload.error]
-            .filter(Boolean)
-            .join("\n");
-          const output = normalizeNotifyOutput(combined.slice(-DEFAULT_NOTIFY_TAIL_CHARS));
-          const exitLabel = payload.timedOut ? "timeout" : `code ${payload.exitCode ?? "?"}`;
-          const summary = output
-            ? `Exec finished (node=${nodeId} id=${approvalId}, ${exitLabel})\n${output}`
-            : `Exec finished (node=${nodeId} id=${approvalId}, ${exitLabel})`;
-          await execHostShared.sendExecApprovalFollowupResult(followupTarget, summary);
-        } catch {
           await execHostShared.sendExecApprovalFollowupResult(
             followupTarget,
-            `Exec denied (node=${nodeId} id=${approvalId}, invoke-failed): ${params.command}`,
+            summarizeApprovedNodeInvokeResult({
+              raw,
+              nodeId,
+              approvalId,
+            }),
+          );
+        } catch (error) {
+          // Gateway-side system.run timeouts keep the deferred delivery route alive so
+          // the later exec.finished/exec.denied event can report the real outcome.
+          const pendingGatewayTimeout = isPendingNodeInvokeTimeout(error);
+          const pendingQueuedInvoke = isPendingQueuedNodeInvoke(error);
+          if (pendingGatewayTimeout || pendingQueuedInvoke) {
+            await execHostShared.sendExecApprovalFollowupResult(
+              followupTarget,
+              pendingQueuedInvoke
+                ? `Exec pending (node=${nodeId} id=${approvalId}, invoke-unconfirmed): ${params.command}\n${
+                    notifyOnExit
+                      ? "The gateway queued the run until the node returns to the foreground. A later completion message may still arrive."
+                      : "The gateway queued the run until the node returns to the foreground. Exec notifyOnExit is disabled, so no automatic completion follow-up will be sent."
+                  }`
+                : `Exec pending (node=${nodeId} id=${approvalId}, gateway-timeout): ${params.command}\n${
+                    notifyOnExit
+                      ? "The gateway timed out before confirming dispatch. If the run was accepted, a later completion message may still arrive."
+                      : "The gateway timed out before confirming dispatch. Exec notifyOnExit is disabled, so no automatic completion follow-up will be sent."
+                  }`,
+            );
+            return;
+          }
+          if (isTerminalApprovedNodeInvokeFailure(error)) {
+            if (!notifyOnExit) {
+              await execHostShared.sendExecApprovalFollowupResult(
+                followupTarget,
+                `Exec denied (node=${nodeId} id=${approvalId}, approval-required): ${params.command}`,
+              );
+            }
+            return;
+          }
+          await execHostShared.sendExecApprovalFollowupResult(
+            followupTarget,
+            `Exec denied (node=${nodeId} id=${approvalId}, invoke-failed): ${params.command}\n${formatErrorMessage(error)}`,
           );
         }
       })();
@@ -423,7 +582,10 @@ export async function executeNodeHostCommand(
   const raw = await callGatewayTool(
     "node.invoke",
     { timeoutMs: invokeTimeoutMs },
-    buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId),
+    buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId, {
+      includeDeliveryContext: notifyOnExit,
+      suppressNotifyOnExit: !notifyOnExit,
+    }),
   );
   const payload =
     raw && typeof raw === "object" ? (raw as { payload?: unknown }).payload : undefined;

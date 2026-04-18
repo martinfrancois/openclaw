@@ -33,6 +33,7 @@ import { resolveSystemRunCommandRequest } from "../infra/system-run-command.js";
 import { logWarn } from "../logger.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { normalizeDeliveryContext, type DeliveryContext } from "../utils/delivery-context.js";
 import { evaluateSystemRunPolicy, resolveExecApprovalDecision } from "./exec-policy.js";
 import {
   applyOutputTruncation,
@@ -74,6 +75,7 @@ type SystemRunExecutionContext = {
   sessionKey: string;
   runId: string;
   commandText: string;
+  deliveryContext?: DeliveryContext;
   suppressNotifyOnExit: boolean;
 };
 
@@ -115,6 +117,8 @@ type SystemRunPolicyPhase = SystemRunParsePhase & {
   isWindows: boolean;
   approvedCwdSnapshot: ApprovedCwdSnapshot | undefined;
 };
+
+const SYSTEM_RUN_INVOKE_REPLY_FALLBACK = Symbol.for("openclaw.systemRunInvokeReplyFallback");
 
 const safeBinTrustedDirWarningCache = new Set<string>();
 const APPROVAL_CWD_DRIFT_DENIED_MESSAGE =
@@ -218,6 +222,7 @@ async function sendSystemRunDenied(
       sessionKey: execution.sessionKey,
       runId: execution.runId,
       host: "node",
+      deliveryContext: execution.deliveryContext,
       command: execution.commandText,
       reason: params.reason,
       suppressNotifyOnExit: execution.suppressNotifyOnExit,
@@ -235,21 +240,86 @@ async function sendSystemRunCompleted(
   result: ExecFinishedResult,
   payloadJSON: string,
 ) {
-  await opts.sendExecFinishedEvent({
+  const execFinishedEvent = {
     sessionKey: execution.sessionKey,
     runId: execution.runId,
     commandText: execution.commandText,
     result,
     suppressNotifyOnExit: execution.suppressNotifyOnExit,
-  });
-  await opts.sendInvokeResult({
-    ok: true,
-    payloadJSON,
-  });
+  } as const;
+  let invokeResultError: unknown = null;
+  try {
+    await opts.sendInvokeResult({
+      ok: true,
+      payloadJSON,
+    });
+  } catch (error) {
+    invokeResultError = error;
+    logWarn(
+      `system.run invoke result delivery failed (runId=${execution.runId}): ${String(
+        error instanceof Error ? error.message : error,
+      )}`,
+    );
+  }
+  if (invokeResultError) {
+    try {
+      await opts.sendExecFinishedEvent({
+        ...execFinishedEvent,
+        deliveryContext: execution.deliveryContext,
+      });
+    } catch (error) {
+      logWarn(
+        `system.run exec.finished delivery failed (runId=${execution.runId}): ${String(
+          error instanceof Error ? error.message : error,
+        )}`,
+      );
+    }
+    throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
+  }
+  void opts
+    .sendExecFinishedEvent({
+      ...execFinishedEvent,
+      // A successful invoke reply is already terminal for the caller. Only keep the
+      // delivery route on the deferred exec.finished event when the invoke reply
+      // itself could not be delivered, so later completion can still surface.
+      deliveryContext: undefined,
+    })
+    .catch((error) => {
+      logWarn(
+        `system.run exec.finished delivery failed (runId=${execution.runId}): ${String(
+          error instanceof Error ? error.message : error,
+        )}`,
+      );
+    });
 }
 
 export { formatSystemRunAllowlistMissMessage } from "./exec-policy.js";
 export { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
+
+function tagSystemRunInvokeReplyFallbackError(error: unknown): Error {
+  const fallbackMessage =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "system.run invoke reply failed";
+  const tagged = error instanceof Error ? error : new Error(fallbackMessage);
+  Object.defineProperty(tagged, SYSTEM_RUN_INVOKE_REPLY_FALLBACK, {
+    value: true,
+    configurable: true,
+  });
+  return tagged;
+}
+
+export function isSystemRunInvokeReplyFallbackError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { [SYSTEM_RUN_INVOKE_REPLY_FALLBACK]?: unknown })[
+      SYSTEM_RUN_INVOKE_REPLY_FALLBACK
+    ] === true,
+  );
+}
 
 async function parseSystemRunPhase(
   opts: HandleSystemRunInvokeOptions,
@@ -290,6 +360,8 @@ async function parseSystemRunPhase(
   const agentId = normalizeOptionalString(opts.params.agentId);
   const sessionKey = normalizeOptionalString(opts.params.sessionKey) ?? "node";
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
+  const deliveryContext =
+    normalizeDeliveryContext(opts.params.deliveryContext ?? undefined) ?? undefined;
   const suppressNotifyOnExit = opts.params.suppressNotifyOnExit === true;
   const envAssignmentKeys = extractEnvAssignmentKeysFromDispatchWrappers(command.argv);
   const envAssignmentOverrides =
@@ -354,7 +426,7 @@ async function parseSystemRunPhase(
     agentId,
     sessionKey,
     runId,
-    execution: { sessionKey, runId, commandText, suppressNotifyOnExit },
+    execution: { sessionKey, runId, commandText, deliveryContext, suppressNotifyOnExit },
     approvalDecision: resolveExecApprovalDecision(opts.params.approvalDecision),
     envOverrides,
     env: opts.sanitizeEnv(envOverrides),

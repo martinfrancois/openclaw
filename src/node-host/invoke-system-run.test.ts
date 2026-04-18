@@ -405,6 +405,12 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     rawCommand?: string | null;
     systemRunPlan?: SystemRunApprovalPlan | null;
     cwd?: string;
+    deliveryContext?: {
+      channel: string;
+      to: string;
+      accountId?: string;
+      threadId?: string | number;
+    };
     security?: "full" | "allowlist";
     ask?: "off" | "on-miss" | "always";
     approvalDecision?: "allow" | "allow-always" | "deny" | null;
@@ -464,6 +470,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         rawCommand: params.rawCommand,
         systemRunPlan: params.systemRunPlan,
         cwd: params.cwd,
+        deliveryContext: params.deliveryContext,
         approvalDecision: params.approvalDecision,
         approved: params.approved ?? false,
         sessionKey: "agent:main:main",
@@ -504,6 +511,128 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(runViaMacAppExecHost).not.toHaveBeenCalled();
     expect(runCommand).toHaveBeenCalledTimes(1);
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
+  });
+
+  it("returns the invoke result before waiting on exec.finished delivery for local execution", async () => {
+    let resolveExecFinishedEvent: (() => void) | undefined;
+    const execFinishedEventPending = new Promise<void>((resolve) => {
+      resolveExecFinishedEvent = resolve;
+    });
+    const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      sendExecFinishedEvent: async () => {
+        await execFinishedEventPending;
+      },
+    });
+
+    expect(sendInvokeResult).toHaveBeenCalledTimes(1);
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+    expect(sendInvokeResult.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
+      sendExecFinishedEvent.mock.invocationCallOrder[0] ?? 0,
+    );
+    resolveExecFinishedEvent?.();
+  });
+
+  it("still returns the invoke result when exec.finished delivery fails", async () => {
+    const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      sendExecFinishedEvent: async () => {
+        throw new Error("node.event failed");
+      },
+    });
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+    expect(sendInvokeResult).toHaveBeenCalledTimes(1);
+    expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
+  });
+
+  it("drops deferred deliveryContext after a successful invoke reply", async () => {
+    const { sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryContext: undefined,
+      }),
+    );
+  });
+
+  it("propagates invoke result delivery failures instead of hanging until timeout", async () => {
+    await expect(
+      runSystemInvoke({
+        preferMacAppExecHost: false,
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+      }),
+    ).rejects.toThrow("request socket closed");
+  });
+
+  it("keeps deferred deliveryContext when invoke result delivery fails", async () => {
+    const sentExecFinished = new Promise<unknown>((resolve) => {
+      const error = new Error("request socket closed");
+      runSystemInvoke({
+        preferMacAppExecHost: false,
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sendInvokeResult: async () => {
+          throw error;
+        },
+        sendExecFinishedEvent: async (params) => {
+          resolve(params);
+        },
+      }).catch(() => {});
+    });
+
+    await expect(sentExecFinished).resolves.toEqual(
+      expect.objectContaining({
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+      }),
+    );
+  });
+
+  it("waits for deferred exec.finished delivery before surfacing invoke result failures", async () => {
+    let resolveExecFinishedEvent: (() => void) | undefined;
+    const execFinishedEventPending = new Promise<void>((resolve) => {
+      resolveExecFinishedEvent = resolve;
+    });
+    let settled = false;
+    const invokePromise = runSystemInvoke({
+      preferMacAppExecHost: false,
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+      sendInvokeResult: async () => {
+        throw new Error("request socket closed");
+      },
+      sendExecFinishedEvent: async () => {
+        await execFinishedEventPending;
+      },
+    }).finally(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveExecFinishedEvent?.();
+
+    await expect(invokePromise).rejects.toThrow("request socket closed");
   });
 
   it("uses mac app exec host when explicitly preferred", async () => {

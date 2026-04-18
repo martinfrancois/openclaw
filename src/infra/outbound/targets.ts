@@ -1,5 +1,9 @@
 import { mapAllowFromEntries } from "openclaw/plugin-sdk/channel-config-helpers";
 import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
+import {
+  comparableChannelTargetsShareRoute,
+  resolveComparableTargetForLoadedChannel,
+} from "../../channels/plugins/target-parsing-loaded.js";
 import type { ChannelOutboundTargetMode } from "../../channels/plugins/types.core.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
@@ -8,6 +12,7 @@ import { normalizeAccountId } from "../../routing/session-key.js";
 import {
   deliveryContextFromSession,
   mergeDeliveryContext,
+  normalizeDeliveryContext,
 } from "../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type {
@@ -86,6 +91,7 @@ export function resolveHeartbeatDeliveryTarget(params: {
   entry?: SessionEntry;
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   turnSource?: DeliveryContext;
+  allowAsyncWakeFallbackToLast?: boolean;
 }): OutboundTarget {
   const { cfg, entry } = params;
   const heartbeat = params.heartbeat ?? cfg.agents?.defaults?.heartbeat;
@@ -100,6 +106,13 @@ export function resolveHeartbeatDeliveryTarget(params: {
     }
   }
 
+  const useAsyncWakeFallbackToLast =
+    target === "none" && params.allowAsyncWakeFallbackToLast === true;
+  const hasExplicitHeartbeatTo = !useAsyncWakeFallbackToLast && Boolean(heartbeat?.to?.trim());
+  if (useAsyncWakeFallbackToLast) {
+    target = "last";
+  }
+
   if (target === "none") {
     const base = resolveSessionDeliveryTarget({ entry });
     return buildNoHeartbeatDeliveryTarget({
@@ -109,15 +122,54 @@ export function resolveHeartbeatDeliveryTarget(params: {
     });
   }
 
+  const sessionDeliveryContext = normalizeDeliveryContext(deliveryContextFromSession(entry));
+  const mergeAsyncWakeFallbackTurnSource = (): DeliveryContext | undefined => {
+    const normalizedTurnSource = normalizeDeliveryContext(params.turnSource);
+    if (
+      !normalizedTurnSource?.channel ||
+      !normalizedTurnSource.to ||
+      normalizedTurnSource.accountId ||
+      !sessionDeliveryContext?.channel ||
+      !sessionDeliveryContext.to ||
+      !sessionDeliveryContext.accountId ||
+      normalizedTurnSource.channel !== sessionDeliveryContext.channel
+    ) {
+      return normalizedTurnSource;
+    }
+    const turnSourceTarget = resolveComparableTargetForLoadedChannel({
+      channel: normalizedTurnSource.channel,
+      rawTarget: normalizedTurnSource.to,
+      fallbackThreadId: normalizedTurnSource.threadId,
+    });
+    const sessionTarget = resolveComparableTargetForLoadedChannel({
+      channel: sessionDeliveryContext.channel,
+      rawTarget: sessionDeliveryContext.to,
+      fallbackThreadId: sessionDeliveryContext.threadId,
+    });
+    return comparableChannelTargetsShareRoute({
+      left: turnSourceTarget,
+      right: sessionTarget,
+    })
+      ? {
+          ...normalizedTurnSource,
+          accountId: sessionDeliveryContext.accountId,
+        }
+      : normalizedTurnSource;
+  };
+
   const resolvedTurnSource =
     target === "last"
-      ? mergeDeliveryContext(params.turnSource, deliveryContextFromSession(entry))
+      ? useAsyncWakeFallbackToLast
+        ? mergeAsyncWakeFallbackTurnSource()
+        : mergeDeliveryContext(params.turnSource, sessionDeliveryContext)
       : undefined;
 
   const resolvedTarget = resolveSessionDeliveryTarget({
     entry,
     requestedChannel: target === "last" ? "last" : target,
-    explicitTo: heartbeat?.to,
+    // Async exec completions falling back from target=none should reply to the
+    // originating session route, not heartbeat-level explicit destinations.
+    explicitTo: useAsyncWakeFallbackToLast ? undefined : heartbeat?.to,
     mode: "heartbeat",
     turnSourceChannel:
       resolvedTurnSource?.channel && isDeliverableMessageChannel(resolvedTurnSource.channel)
@@ -133,7 +185,7 @@ export function resolveHeartbeatDeliveryTarget(params: {
     turnSourceThreadId: params.turnSource?.threadId,
   });
 
-  const heartbeatAccountId = heartbeat?.accountId?.trim();
+  const heartbeatAccountId = useAsyncWakeFallbackToLast ? undefined : heartbeat?.accountId?.trim();
   // Use explicit accountId from heartbeat config if provided, otherwise fall back to session
   let effectiveAccountId = heartbeatAccountId || resolvedTarget.accountId;
 
@@ -186,13 +238,22 @@ export function resolveHeartbeatDeliveryTarget(params: {
     });
   }
 
-  const sessionChatTypeHint =
-    target === "last" && !heartbeat?.to ? normalizeChatType(entry?.chatType) : undefined;
-  const deliveryChatType = resolveHeartbeatDeliveryChatType({
+  const normalizedSessionChatType = normalizeChatType(entry?.chatType);
+  const inferredDeliveryChatType = inferChatTypeFromTarget({
     channel: resolvedTarget.channel,
     to: resolved.to,
-    sessionChatType: sessionChatTypeHint,
   });
+  const sessionChatTypeHint =
+    inferredDeliveryChatType == null &&
+    target === "last" &&
+    !hasExplicitHeartbeatTo &&
+    (!useAsyncWakeFallbackToLast ||
+      !params.turnSource ||
+      (resolvedTarget.channel === entry?.lastChannel &&
+        (resolvedTarget.to === entry?.lastTo || normalizedSessionChatType === "direct")))
+      ? normalizedSessionChatType
+      : undefined;
+  const deliveryChatType = inferredDeliveryChatType ?? sessionChatTypeHint;
   if (deliveryChatType === "direct" && heartbeat?.directPolicy === "block") {
     return buildNoHeartbeatDeliveryTarget({
       reason: "dm-blocked",
@@ -222,10 +283,10 @@ export function resolveHeartbeatDeliveryTarget(params: {
 
   const inheritedHeartbeatThreadId = shouldReuseHeartbeatTelegramTopicThread({
     target,
-    heartbeat,
     turnSource: params.turnSource,
     entry,
     resolvedTarget,
+    hasExplicitHeartbeatTo,
   })
     ? resolvedTarget.lastThreadId
     : undefined;
@@ -285,32 +346,26 @@ function inferChatTypeFromTarget(params: {
   );
 }
 
-function resolveHeartbeatDeliveryChatType(params: {
-  channel: DeliverableMessageChannel;
-  to: string;
-  sessionChatType?: ChatType;
-}): ChatType | undefined {
-  if (params.sessionChatType) {
-    return params.sessionChatType;
-  }
-  return inferChatTypeFromTarget({
-    channel: params.channel,
-    to: params.to,
-  });
-}
-
 function shouldReuseHeartbeatTelegramTopicThread(params: {
   target: HeartbeatTarget;
-  heartbeat?: AgentDefaultsConfig["heartbeat"];
   turnSource?: DeliveryContext;
   entry?: SessionEntry;
   resolvedTarget: SessionDeliveryTarget;
+  hasExplicitHeartbeatTo: boolean;
 }): boolean {
+  const turnSourceHasTelegramTopic =
+    params.turnSource?.channel === "telegram" &&
+    resolveComparableTargetForLoadedChannel({
+      channel: "telegram",
+      rawTarget: params.turnSource.to,
+      fallbackThreadId: params.turnSource.threadId,
+    })?.threadId != null;
   return (
     params.resolvedTarget.threadId == null &&
     params.target === "last" &&
-    !params.heartbeat?.to &&
+    !params.hasExplicitHeartbeatTo &&
     params.turnSource?.threadId == null &&
+    (!params.turnSource || turnSourceHasTelegramTopic) &&
     params.resolvedTarget.channel === "telegram" &&
     params.resolvedTarget.lastChannel === "telegram" &&
     Boolean(params.resolvedTarget.to) &&

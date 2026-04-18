@@ -108,6 +108,7 @@ const withLabel = <T extends object>(label: string, fields: T): T & LabeledCase 
 });
 // Both PowerShell and bash use ; for command separation
 const joinCommands = (commands: string[]) => commands.join("; ");
+const echoAfterDelay = (message: string) => joinCommands([shortDelayCmd, shellEcho(message)]);
 const normalizeText = (value?: string) =>
   sanitizeBinaryOutput(value ?? "")
     .replace(/\r\n/g, "\n")
@@ -486,8 +487,8 @@ describe("background follow-up hints", () => {
     const { result, sessionId } = await startBackgroundCommandWithResult(tool, yieldDelayCmd);
 
     const text = readTextContent(result.content) ?? "";
-    expect(text).toContain("Confirm completion with process");
-    expect(text).toContain("finish without another user-visible message");
+    expect(text).toContain("Completion notifications stay enabled for this exec session");
+    expect(text).toContain("including quiet successful exits without output");
     await waitForCompletion(sessionId);
   });
 
@@ -584,6 +585,523 @@ describe("exec tool backgrounding", () => {
     const sessions = await listProcessSessions(processTool);
     expect(hasSession(sessions, sessionId)).toBe(true);
     expect(sessions.find((s) => s.sessionId === sessionId)?.name).toBe(COMMAND_ECHO_HELLO);
+  });
+
+  it.skipIf(isWin)("rejects detached shell backgrounding without wait", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 &")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("allows redirection forms that use & without backgrounding", async () => {
+    const redirectResult = await executeExecCommand(execTool, "echo hi >/dev/null 2>&1");
+    expect(readProcessStatus(redirectResult.details)).toBe(PROCESS_STATUS_COMPLETED);
+
+    const bashRedirectResult = await executeExecCommand(execTool, "echo hi &>/dev/null");
+    expect(readProcessStatus(bashRedirectResult.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows arithmetic expressions that use & without backgrounding", async () => {
+    const result = await executeExecCommand(execTool, "echo $((1 & 1))");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("1");
+  });
+
+  it.skipIf(isWin)("allows [[ patterns that use literal & without backgrounding", async () => {
+    const result = await executeExecCommand(execTool, 'x="a&b"; [[ "$x" == *"&"* ]] && echo yes');
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("yes");
+  });
+
+  it.skipIf(isWin)("allows case patterns that use literal & without backgrounding", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      `x="a&b"; case "$x" in a&b) echo yes ;; esac`,
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("yes");
+  });
+
+  it.skipIf(isWin)("allows case patterns that end with a literal & before )", async () => {
+    const result = await executeExecCommand(execTool, `x="a&"; case "$x" in *&) echo yes ;; esac`);
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("yes");
+  });
+
+  it.skipIf(isWin)(
+    "allows parameter expansion syntax that uses & without backgrounding",
+    async () => {
+      const result = await executeExecCommand(
+        execTool,
+        "name='a&b'; printf '%s %s' ${name/&/-} ${name//&/and}",
+      );
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+      expect(readTextContent(result.content)).toContain("a-b aandb");
+    },
+  );
+
+  it.skipIf(isWin)("rejects detached jobs inside quoted command substitutions", async () => {
+    await expect(executeExecCommand(execTool, `printf '%s\\n' "$(sleep 0.004 &)"`)).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside parameter expansion substitutions", async () => {
+    await expect(executeExecCommand(execTool, "echo ${x:-$(sleep 0.004 &)}")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside backtick command substitutions", async () => {
+    await expect(
+      executeExecCommand(execTool, "printf '%s\\n' \"`sleep 0.004 &`\""),
+    ).rejects.toThrow(/detached shell backgrounding detected/i);
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside bash -lc wrappers", async () => {
+    await expect(executeExecCommand(execTool, "bash -lc 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside sh -c wrappers", async () => {
+    await expect(executeExecCommand(execTool, 'sh -c "sleep 0.004 &"')).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside fish -c wrappers", async () => {
+    await expect(executeExecCommand(execTool, "fish -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside command shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "command bash -lc 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside exec shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "exec sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)(
+    "rejects detached jobs without spaces around the & control operator",
+    async () => {
+      await expect(executeExecCommand(execTool, "sleep 0.004&echo ok")).rejects.toThrow(
+        /detached shell backgrounding detected/i,
+      );
+    },
+  );
+
+  it.skipIf(isWin)(
+    "ignores detached jobs inside function definitions that are not invoked",
+    async () => {
+      const result = await executeExecCommand(execTool, "worker(){ sleep 0.004 & }; echo ok");
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+      expect(readTextContent(result.content)).toContain("ok");
+    },
+  );
+
+  it.skipIf(isWin)(
+    "rejects detached jobs when an unsafe shell function is invoked later",
+    async () => {
+      await expect(
+        executeExecCommand(execTool, "worker(){ sleep 0.004 & }; worker"),
+      ).rejects.toThrow(/detached shell backgrounding detected/i);
+    },
+  );
+
+  it.skipIf(isWin)(
+    "allows a later wait to join background jobs started inside shell functions",
+    async () => {
+      const result = await executeExecCommand(execTool, "worker(){ sleep 0.004 & }; worker; wait");
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    },
+  );
+
+  it.skipIf(isWin)(
+    "requires shell functions to join all background jobs they leave behind",
+    async () => {
+      await expect(
+        executeExecCommand(
+          execTool,
+          'worker(){ sleep 0.004 & p1=$!; sleep 0.004 & p2=$!; }; worker; wait "$p1"',
+        ),
+      ).rejects.toThrow(/detached shell backgrounding detected/i);
+    },
+  );
+
+  it.skipIf(isWin)("ignores & inside shell comments and heredoc bodies", async () => {
+    const commentResult = await executeExecCommand(execTool, "echo ok # keep a&b note");
+    expect(readProcessStatus(commentResult.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(commentResult.content)).toContain("ok");
+
+    const heredocResult = await executeExecCommand(execTool, "cat <<'EOF'\nnohup demo &\nEOF");
+    expect(readProcessStatus(heredocResult.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(heredocResult.content)).toContain("nohup demo &");
+  });
+
+  it.skipIf(isWin)("rejects detached jobs inside expandable heredoc substitutions", async () => {
+    await expect(executeExecCommand(execTool, "cat <<EOF\n$(sleep 0.004 &)\nEOF")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("still rejects detached jobs that appear after a heredoc", async () => {
+    await expect(
+      executeExecCommand(execTool, "cat <<'EOF'\nnohup demo &\nEOF\nsleep 0.004 &"),
+    ).rejects.toThrow(/detached shell backgrounding detected/i);
+  });
+
+  it.skipIf(isWin)(
+    "still rejects detached jobs after a backslash-quoted heredoc delimiter",
+    async () => {
+      await expect(
+        executeExecCommand(execTool, "cat <<\\EOF\nnohup demo &\nEOF\nsleep 0.004 &"),
+      ).rejects.toThrow(/detached shell backgrounding detected/i);
+    },
+  );
+
+  it.skipIf(isWin)("does not treat # inside shell words as comment starts", async () => {
+    await expect(executeExecCommand(execTool, "echo foo#bar &")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("allows Bash case ;& fallthrough operators", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "case x in x) echo one ;& *) echo two ;; esac",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("one");
+    expect(readTextContent(result.content)).toContain("two");
+  });
+
+  it.skipIf(isWin)("allows Bash case ;;& fallthrough operators", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "case x in x) echo one ;;& x) echo two ;; esac",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("one");
+    expect(readTextContent(result.content)).toContain("two");
+  });
+
+  it.skipIf(isWin)("does not treat a wait argument as the wait builtin", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & echo wait")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("does not treat wait options as joining all background jobs", async () => {
+    await expect(
+      executeExecCommand(execTool, "sleep 0.004 & sleep 0.004 & wait -n"),
+    ).rejects.toThrow(/detached shell backgrounding detected/i);
+  });
+
+  it.skipIf(isWin)("allows wait -n when exactly one background job is pending", async () => {
+    const result = await executeExecCommand(execTool, "sleep 0.004 & wait -n");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows repeated wait -n calls to drain multiple background jobs", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "bash -lc 'sleep 0.01 & sleep 0.03 & wait -n; wait -n'",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows wait -n with targeted background operands", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      `bash -lc 'sleep 0.01 & pid=$!; wait -n "$pid"'`,
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows wait -f with a targeted background pid", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      `bash -lc 'sleep 0.01 & pid=$!; wait -f "$pid"'`,
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows wait on command-substituted jobs -p output", async () => {
+    const result = await executeExecCommand(execTool, `bash -lc 'sleep 0.01 & wait $(jobs -p)'`);
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("does not treat wait operands as joining all background jobs", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & wait 99999")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("allows waiting on a captured background pid", async () => {
+    const result = await executeExecCommand(execTool, 'sleep 0.004 & pid=$!; wait "$pid"');
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows waiting on multiple captured background pids", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      'sleep 0.004 & p1=$!; sleep 0.004 & p2=$!; wait "$p1" "$p2"',
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows waiting on captured background pid arrays", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      'pids=(); sleep 0.004 & pids+=($!); sleep 0.004 & pids+=($!); wait "${pids[@]}"',
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)(
+    "does not treat arbitrary wait variable operands as joined background jobs",
+    async () => {
+      await expect(
+        executeExecCommand(execTool, 'sleep 0.004 & bogus=123; wait "$bogus"'),
+      ).rejects.toThrow(/detached shell backgrounding detected/i);
+    },
+  );
+
+  it.skipIf(isWin)("does not let an outer wait clear jobs started in a subshell", async () => {
+    await expect(executeExecCommand(execTool, "(sleep 0.004 &) ; wait")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("allows shell backgrounding when the command waits before exit", async () => {
+    const result = await executeExecCommand(execTool, "sleep 0.004 & wait");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows shell backgrounding when builtin wait joins the job", async () => {
+    const result = await executeExecCommand(execTool, "sleep 0.004 & builtin wait");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)(
+    "allows shell backgrounding when local captures $! before wait joins the job",
+    async () => {
+      const result = await executeExecCommand(execTool, 'sleep 0.004 & local pid=$!; wait "$pid"');
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    },
+  );
+
+  it.skipIf(isWin)(
+    "does not hang on command builtin flags that are not shell wrappers",
+    async () => {
+      const result = await executeExecCommand(execTool, "command -v sh");
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+      expect(readNormalizedTextContent(result.content)).toContain("sh");
+    },
+  );
+
+  it.skipIf(isWin)("allows shell backgrounding when command wait joins the job", async () => {
+    const result = await executeExecCommand(execTool, "sleep 0.004 & command wait");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)(
+    "allows shell backgrounding when a pid list accumulates background jobs before wait",
+    async () => {
+      const result = await executeExecCommand(
+        execTool,
+        'sleep 0.004 & pids="$pids $!"; sleep 0.004 & pids="$pids $!"; wait $pids',
+      );
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    },
+  );
+
+  it.skipIf(isWin)(
+    "allows multiline shell backgrounding when a later wait joins the job",
+    async () => {
+      const result = await executeExecCommand(execTool, "sleep 0.004 &\nwait");
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    },
+  );
+
+  it.skipIf(isWin)(
+    "allows multiline shell backgrounding when later commands continue after wait",
+    async () => {
+      const result = await executeExecCommand(execTool, 'sleep 0.004 &\nwait\necho "done"');
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+      expect(readNormalizedTextContent(result.content)).toContain("done");
+    },
+  );
+
+  it.skipIf(isWin)("allows if-condition waits to join an existing background job", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      'sleep 0.004 & pid=$!; if wait "$pid"; then echo "done"; fi',
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readNormalizedTextContent(result.content)).toContain("done");
+  });
+
+  it.skipIf(isWin)("allows while-condition waits to join an existing background job", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      'sleep 0.004 & pid=$!; while wait "$pid"; do echo "done"; break; done',
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readNormalizedTextContent(result.content)).toContain("done");
+  });
+
+  it.skipIf(isWin)("does not treat short-circuit waits as joining detached jobs", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & false && wait")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("does not treat fallback waits as joining detached jobs", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & true || wait")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("does not treat waits inside if branches as joining detached jobs", async () => {
+    await expect(
+      executeExecCommand(execTool, "sleep 0.004 & if false; then wait; fi"),
+    ).rejects.toThrow(/detached shell backgrounding detected/i);
+  });
+
+  it.skipIf(isWin)("allows waits that join jobs started inside the same if branch", async () => {
+    const result = await executeExecCommand(execTool, "if true; then sleep 0.004 & wait; fi");
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("still allows an unconditional wait after a conditional block", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "sleep 0.004 & if false; then echo skipped; fi; wait",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)(
+    "allows waits inside standalone brace groups to join an existing background job",
+    async () => {
+      const result = await executeExecCommand(execTool, 'sleep 0.004 & { wait; echo "done"; }');
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+      expect(readNormalizedTextContent(result.content)).toContain("done");
+    },
+  );
+
+  it.skipIf(isWin)("ignores Bash function bodies declared with the function keyword", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "function worker { sleep 0.004 &; }; echo ok",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    expect(readTextContent(result.content)).toContain("ok");
+  });
+
+  it.skipIf(isWin)("rejects later detached jobs even after an earlier wait completes", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & wait; sleep 0.004 &")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects zsh detached backgrounding with &!", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 &!")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects zsh detached backgrounding with &|", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 &|")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside env shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "env bash -lc 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside timeout shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "timeout 5 sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside sudo shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "sudo sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside nice shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "nice -n 5 sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside setsid shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "setsid sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects detached backgrounding inside stdbuf shell wrappers", async () => {
+    await expect(executeExecCommand(execTool, "stdbuf -o0 sh -c 'sleep 0.004 &'")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("does not treat mixed-case WAIT as the wait builtin", async () => {
+    await expect(executeExecCommand(execTool, "sleep 0.004 & WAIT")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
+  });
+
+  it.skipIf(isWin)("rejects coproc backgrounding without a tracked process session", async () => {
+    await expect(executeExecCommand(execTool, "coproc sleep 0.004")).rejects.toThrow(
+      /detached shell backgrounding detected/i,
+    );
   });
 
   it.each<DisallowedElevationCase>(DISALLOWED_ELEVATION_CASES)(
@@ -718,7 +1236,7 @@ describe("exec notifyOnExit", () => {
     );
     const text = readTextContent(result.content) ?? "";
 
-    expect(text).toContain("Confirm completion with process");
+    expect(text).toContain("Completion notifications stay enabled for this exec session");
     expect(text).not.toContain("automatic completion notice");
     expect(text).not.toContain("will also notify automatically");
   });

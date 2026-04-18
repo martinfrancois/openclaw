@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { sanitizeInboundSystemTags } from "../../auto-reply/reply/inbound-text.js";
 import { loadConfig } from "../../config/config.js";
+import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
 import { listDevicePairing } from "../../infra/device-pairing.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import {
+  forgetNodeExecDeliveryContext,
+  rememberNodeExecDeliveryContext,
+  resolveNodeExecDeliveryContext,
+} from "../../infra/node-exec-delivery-context.js";
 import {
   approveNodePairing,
   listNodePairing,
@@ -24,12 +31,18 @@ import {
   normalizeOptionalString,
 } from "../../shared/string-coerce.js";
 import {
+  deliveryContextKey,
+  normalizeDeliveryContext,
+  type DeliveryContext,
+} from "../../utils/delivery-context.js";
+import {
   buildCanvasScopedHostUrl,
   CANVAS_CAPABILITY_TTL_MS,
   mintCanvasCapabilityToken,
 } from "../canvas-capability.js";
 import { createKnownNodeCatalog, getKnownNode, listKnownNodes } from "../node-catalog.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
+import { markExecFinishedDelivered } from "../node-exec-finished-dedupe.js";
 import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.js";
 import {
   type ConnectParams,
@@ -47,6 +60,7 @@ import {
   validateNodePairVerifyParams,
   validateNodeRenameParams,
 } from "../protocol/index.js";
+import { canonicalizeSessionKeyForAgent, resolveSessionStoreKey } from "../session-store-key.js";
 import { handleNodeInvokeResult } from "./nodes.handlers.invoke-result.js";
 import {
   respondInvalidParams,
@@ -100,6 +114,7 @@ type PendingNodeAction = {
 };
 
 const pendingNodeActionsById = new Map<string, PendingNodeAction[]>();
+const MAX_EXEC_EVENT_OUTPUT_CHARS = 180;
 
 function normalizeBrowserProxyPath(value: string): string {
   const trimmed = value.trim();
@@ -132,6 +147,370 @@ function isForbiddenBrowserProxyMutation(params: unknown): boolean {
   const method = (normalizeOptionalString(candidate.method) ?? "").toUpperCase();
   const path = normalizeOptionalString(candidate.path) ?? "";
   return Boolean(method && path && isPersistentBrowserProxyMutation(method, path));
+}
+
+function resolveForwardedSystemRunDeliveryContextRegistration(
+  nodeId: string,
+  command: string,
+  forwardedParams: unknown,
+): {
+  nodeId: string;
+  sessionKey?: string;
+  runId?: string;
+  deliveryContext?: DeliveryContext;
+  suppressNotifyOnExit: boolean;
+} | null {
+  if (command !== "system.run" || typeof forwardedParams !== "object" || forwardedParams === null) {
+    return null;
+  }
+  const params = forwardedParams as {
+    agentId?: unknown;
+    sessionKey?: unknown;
+    runId?: unknown;
+    deliveryContext?: unknown;
+    suppressNotifyOnExit?: unknown;
+  };
+  const rawSessionKey = normalizeOptionalString(params.sessionKey);
+  const rawAgentId = normalizeOptionalString(params.agentId);
+  const cfg = loadConfig();
+  const sessionKey = rawSessionKey
+    ? resolveSessionStoreKey({
+        cfg,
+        sessionKey:
+          rawAgentId && !rawSessionKey.toLowerCase().startsWith("agent:")
+            ? canonicalizeSessionKeyForAgent(rawAgentId, rawSessionKey)
+            : rawSessionKey,
+      })
+    : undefined;
+  const { deliveryContext: sessionDeliveryContext, threadId: sessionThreadId } =
+    extractDeliveryInfo(sessionKey);
+  const trustedSessionDeliveryContext = normalizeDeliveryContext(
+    sessionDeliveryContext
+      ? {
+          ...sessionDeliveryContext,
+          threadId: sessionThreadId ?? sessionDeliveryContext.threadId,
+        }
+      : undefined,
+  );
+  const explicitDeliveryContext = normalizeDeliveryContext(
+    params.deliveryContext as
+      | {
+          channel?: string;
+          to?: string;
+          accountId?: string;
+          threadId?: string | number;
+        }
+      | undefined,
+  );
+  const normalizeComparableDeliveryRoute = (
+    context:
+      | {
+          channel?: string;
+          to?: string;
+          accountId?: string;
+          threadId?: string | number;
+        }
+      | undefined,
+  ):
+    | {
+        channel: string;
+        to: string;
+      }
+    | undefined => {
+    const normalized = normalizeDeliveryContext(context);
+    if (!normalized?.channel || !normalized.to) {
+      return undefined;
+    }
+    let comparableTo = normalized.to;
+    if (normalized.channel === "telegram") {
+      const topicMatch = /^(?:telegram|tg):(.+?):(?:topic|thread):[^:]+$/iu.exec(comparableTo);
+      if (topicMatch?.[1]) {
+        comparableTo = topicMatch[1];
+      }
+    }
+    return {
+      channel: normalized.channel,
+      to: comparableTo,
+    };
+  };
+  const normalizeComparableThreadId = (
+    context:
+      | {
+          channel?: string;
+          to?: string;
+          threadId?: string | number;
+        }
+      | undefined,
+  ): string | undefined => {
+    const normalized = normalizeDeliveryContext(context);
+    if (!normalized?.channel) {
+      return undefined;
+    }
+    if (normalized.threadId != null) {
+      return String(normalized.threadId);
+    }
+    if (normalized.channel !== "telegram") {
+      return undefined;
+    }
+    const topicMatch = /^(?:telegram|tg):.+?:(?:topic|thread):([^:]+)$/iu.exec(normalized.to ?? "");
+    return topicMatch?.[1] ? topicMatch[1] : undefined;
+  };
+  const comparableExplicitRoute = normalizeComparableDeliveryRoute(explicitDeliveryContext);
+  const comparableTrustedRoute = normalizeComparableDeliveryRoute(trustedSessionDeliveryContext);
+  const explicitComparableThreadId = normalizeComparableThreadId(explicitDeliveryContext);
+  const trustedComparableThreadId = normalizeComparableThreadId(trustedSessionDeliveryContext);
+  const sameComparableRoute =
+    comparableExplicitRoute &&
+    comparableTrustedRoute &&
+    comparableExplicitRoute.channel === comparableTrustedRoute.channel &&
+    comparableExplicitRoute.to === comparableTrustedRoute.to;
+  const deliveryContext: DeliveryContext | undefined =
+    params.suppressNotifyOnExit === true
+      ? undefined
+      : !explicitDeliveryContext
+        ? trustedSessionDeliveryContext
+        : trustedSessionDeliveryContext && sameComparableRoute
+          ? trustedComparableThreadId == null ||
+            trustedComparableThreadId === explicitComparableThreadId
+            ? {
+                ...trustedSessionDeliveryContext,
+                ...(!trustedSessionDeliveryContext.accountId && explicitDeliveryContext?.accountId
+                  ? { accountId: explicitDeliveryContext.accountId }
+                  : {}),
+                ...(explicitDeliveryContext?.threadId != null
+                  ? { threadId: explicitDeliveryContext.threadId }
+                  : {}),
+              }
+            : explicitDeliveryContext?.channel && explicitDeliveryContext.to
+              ? {
+                  ...explicitDeliveryContext,
+                  ...(trustedSessionDeliveryContext.accountId
+                    ? { accountId: trustedSessionDeliveryContext.accountId }
+                    : {}),
+                }
+              : trustedSessionDeliveryContext
+          : trustedSessionDeliveryContext;
+  return {
+    nodeId,
+    sessionKey,
+    runId: normalizeOptionalString(params.runId),
+    deliveryContext,
+    suppressNotifyOnExit: params.suppressNotifyOnExit === true,
+  };
+}
+
+function ensureForwardedSystemRunRunId(command: string, forwardedParams: unknown): unknown {
+  if (command !== "system.run" || typeof forwardedParams !== "object" || forwardedParams === null) {
+    return forwardedParams;
+  }
+  const params = forwardedParams as Record<string, unknown>;
+  const runId = normalizeOptionalString(params.runId);
+  if (runId) {
+    return forwardedParams;
+  }
+  return {
+    ...params,
+    runId: randomUUID(),
+  };
+}
+
+function hasExplicitForwardedSystemRunDeliveryContext(
+  command: string,
+  forwardedParams: unknown,
+): boolean {
+  if (command !== "system.run" || typeof forwardedParams !== "object" || forwardedParams === null) {
+    return false;
+  }
+  const params = forwardedParams as { deliveryContext?: unknown };
+  return Boolean(
+    normalizeDeliveryContext(
+      params.deliveryContext as
+        | {
+            channel?: string;
+            to?: string;
+            accountId?: string;
+            threadId?: string | number;
+          }
+        | undefined,
+    )?.channel,
+  );
+}
+
+function restoreForwardedSystemRunDeliveryContext(params: {
+  command: string;
+  sanitizedForwardedParams: unknown;
+  rawForwardedParams: unknown;
+  preserveExplicitDeliveryContext: boolean;
+}): unknown {
+  if (
+    !params.preserveExplicitDeliveryContext ||
+    params.command !== "system.run" ||
+    typeof params.sanitizedForwardedParams !== "object" ||
+    params.sanitizedForwardedParams === null ||
+    typeof params.rawForwardedParams !== "object" ||
+    params.rawForwardedParams === null
+  ) {
+    return params.sanitizedForwardedParams;
+  }
+  const explicitDeliveryContext = normalizeDeliveryContext(
+    (params.rawForwardedParams as { deliveryContext?: unknown }).deliveryContext as
+      | {
+          channel?: string;
+          to?: string;
+          accountId?: string;
+          threadId?: string | number;
+        }
+      | undefined,
+  );
+  if (!explicitDeliveryContext) {
+    return params.sanitizedForwardedParams;
+  }
+  return {
+    ...(params.sanitizedForwardedParams as Record<string, unknown>),
+    deliveryContext: explicitDeliveryContext,
+  };
+}
+
+function buildSystemRunSuccessFallbackText(params: {
+  nodeId: string;
+  runId: string;
+  payload?: unknown;
+  payloadJSON?: string | null;
+}): string {
+  const compactExecEventOutput = (raw: string): string => {
+    const normalized = raw.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      return "";
+    }
+    if (normalized.length <= MAX_EXEC_EVENT_OUTPUT_CHARS) {
+      return normalized;
+    }
+    const safe = Math.max(1, MAX_EXEC_EVENT_OUTPUT_CHARS - 1);
+    return `${normalized.slice(0, safe)}…`;
+  };
+  const payload = params.payloadJSON ? safeParseJson(params.payloadJSON) : params.payload;
+  const parsed =
+    payload && typeof payload === "object"
+      ? (payload as {
+          stdout?: unknown;
+          stderr?: unknown;
+          error?: unknown;
+          timedOut?: unknown;
+          exitCode?: unknown;
+        })
+      : {};
+  const exitCode =
+    typeof parsed.exitCode === "number" && Number.isFinite(parsed.exitCode)
+      ? parsed.exitCode
+      : undefined;
+  const timedOut = parsed.timedOut === true;
+  const output = compactExecEventOutput(
+    [parsed.stdout, parsed.stderr, parsed.error]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => sanitizeInboundSystemTags(value))
+      .join("\n"),
+  );
+  const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
+  return output.trim()
+    ? `Exec finished (node=${params.nodeId} id=${params.runId}, ${exitLabel})\n${output.trim()}`
+    : `Exec finished (node=${params.nodeId} id=${params.runId}, ${exitLabel})`;
+}
+
+function applyTrustedSystemRunDeliveryContext(params: {
+  nodeId: string;
+  command: string;
+  forwardedParams: unknown;
+}): unknown {
+  if (
+    params.command !== "system.run" ||
+    typeof params.forwardedParams !== "object" ||
+    params.forwardedParams === null
+  ) {
+    return params.forwardedParams;
+  }
+  const { deliveryContext: _deliveryContext, ...next } = params.forwardedParams as Record<
+    string,
+    unknown
+  >;
+  const registration = resolveForwardedSystemRunDeliveryContextRegistration(
+    params.nodeId,
+    params.command,
+    params.forwardedParams,
+  );
+  if (!registration?.deliveryContext) {
+    return "deliveryContext" in (params.forwardedParams as Record<string, unknown>)
+      ? next
+      : params.forwardedParams;
+  }
+  return {
+    ...next,
+    deliveryContext: registration.deliveryContext,
+  };
+}
+
+function rememberForwardedSystemRunDeliveryContext(
+  nodeId: string,
+  command: string,
+  forwardedParams: unknown,
+): void {
+  const registration = resolveForwardedSystemRunDeliveryContextRegistration(
+    nodeId,
+    command,
+    forwardedParams,
+  );
+  if (!registration) {
+    return;
+  }
+  if (!registration.deliveryContext) {
+    forgetNodeExecDeliveryContext(registration);
+    return;
+  }
+  const existingDeliveryContext = resolveNodeExecDeliveryContext(registration);
+  if (
+    existingDeliveryContext &&
+    deliveryContextKey(existingDeliveryContext) !== deliveryContextKey(registration.deliveryContext)
+  ) {
+    // Reused runIds cannot safely distinguish an older in-flight completion from a
+    // new retry on a different route. Drop the cache instead of risking misdelivery.
+    forgetNodeExecDeliveryContext(registration);
+    return;
+  }
+  rememberNodeExecDeliveryContext(registration);
+}
+
+function forgetForwardedSystemRunDeliveryContext(
+  nodeId: string,
+  command: string,
+  forwardedParams: unknown,
+): void {
+  const registration = resolveForwardedSystemRunDeliveryContextRegistration(
+    nodeId,
+    command,
+    forwardedParams,
+  );
+  if (!registration) {
+    return;
+  }
+  forgetNodeExecDeliveryContext(registration);
+}
+
+function shouldKeepForwardedSystemRunDeliveryContextOnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  const haystacks = [
+    normalizeOptionalString(candidate.code),
+    normalizeOptionalString(candidate.message),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toUpperCase());
+  return haystacks.some(
+    (value) =>
+      value === "TIMEOUT" ||
+      value.includes("QUEUED_UNTIL_FOREGROUND") ||
+      value.includes("SYSTEM_RUN_DENIED"),
+  );
 }
 
 async function resolveDirectNodePushConfig() {
@@ -1008,27 +1387,53 @@ export const nodeHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const forwardedParams = sanitizeNodeInvokeParamsForForwarding({
+      const rawForwardedParams = ensureForwardedSystemRunRunId(command, p.params);
+      const sanitizedForwardedParams = sanitizeNodeInvokeParamsForForwarding({
         nodeId,
         command,
-        rawParams: p.params,
+        rawParams: rawForwardedParams,
         client,
         execApprovalManager: context.execApprovalManager,
       });
-      if (!forwardedParams.ok) {
+      if (!sanitizedForwardedParams.ok) {
         respond(
           false,
           undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, forwardedParams.message, {
-            details: forwardedParams.details ?? null,
+          errorShape(ErrorCodes.INVALID_REQUEST, sanitizedForwardedParams.message, {
+            details: sanitizedForwardedParams.details ?? null,
           }),
         );
         return;
       }
+      const forwardedParams = {
+        ...sanitizedForwardedParams,
+        params: restoreForwardedSystemRunDeliveryContext({
+          command,
+          sanitizedForwardedParams: sanitizedForwardedParams.params,
+          rawForwardedParams,
+          preserveExplicitDeliveryContext: client?.connect?.client?.mode === "backend",
+        }),
+      };
+      const routeRegistration = resolveForwardedSystemRunDeliveryContextRegistration(
+        nodeId,
+        command,
+        forwardedParams.params,
+      );
+      const keepRoutedSuccessDeliveryContext =
+        Boolean(routeRegistration?.deliveryContext) &&
+        hasExplicitForwardedSystemRunDeliveryContext(command, forwardedParams.params);
+      const invokeForwardedParams = applyTrustedSystemRunDeliveryContext({
+        nodeId,
+        command,
+        forwardedParams: forwardedParams.params,
+      });
+      // Sync deferred routes before dispatch. Conflicting reused runIds are cleared
+      // instead of replaced so an older in-flight completion cannot steal the new route.
+      rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
       const res = await context.nodeRegistry.invoke({
         nodeId,
         command,
-        params: forwardedParams.params,
+        params: invokeForwardedParams,
         timeoutMs: p.timeoutMs,
         idempotencyKey: p.idempotencyKey,
       });
@@ -1079,23 +1484,72 @@ export const nodeHandlers: GatewayRequestHandlers = {
           );
           return;
         }
+        if (!shouldKeepForwardedSystemRunDeliveryContextOnError(res.error)) {
+          forgetForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+        }
         if (!respondUnavailableOnNodeInvokeError(respond, res)) {
           return;
         }
         return;
       }
-      const payload = res.payloadJSON ? safeParseJson(res.payloadJSON) : res.payload;
-      respond(
-        true,
-        {
-          ok: true,
+      const routedSuccessRun =
+        routeRegistration?.sessionKey && routeRegistration.runId
+          ? {
+              sessionKey: routeRegistration.sessionKey,
+              runId: routeRegistration.runId,
+            }
+          : null;
+      if (routedSuccessRun) {
+        markExecFinishedDelivered({
           nodeId,
-          command,
-          payload,
-          payloadJSON: res.payloadJSON ?? null,
-        },
-        undefined,
-      );
+          sessionKey: routedSuccessRun.sessionKey,
+          runId: routedSuccessRun.runId,
+        });
+      }
+      const payload = res.payloadJSON ? safeParseJson(res.payloadJSON) : res.payload;
+      try {
+        respond(
+          true,
+          {
+            ok: true,
+            nodeId,
+            command,
+            payload,
+            payloadJSON: res.payloadJSON ?? null,
+          },
+          undefined,
+        );
+        if (routeRegistration?.deliveryContext && !keepRoutedSuccessDeliveryContext) {
+          forgetNodeExecDeliveryContext(routeRegistration);
+        }
+      } catch (error) {
+        if (routedSuccessRun && routeRegistration?.suppressNotifyOnExit !== true) {
+          const fallbackText = buildSystemRunSuccessFallbackText({
+            nodeId,
+            runId: routedSuccessRun.runId,
+            payload: res.payload,
+            payloadJSON: res.payloadJSON ?? null,
+          });
+          const { enqueueSystemEvent, requestHeartbeatNow, scopedHeartbeatWakeOptions } =
+            await import("../server-node-events.runtime.js");
+          const queued = enqueueSystemEvent(fallbackText, {
+            sessionKey: routedSuccessRun.sessionKey,
+            contextKey: `exec:${routedSuccessRun.runId}`,
+            deliveryContext: routeRegistration?.deliveryContext,
+            trusted: false,
+          });
+          if (queued) {
+            requestHeartbeatNow(
+              scopedHeartbeatWakeOptions(routedSuccessRun.sessionKey, { reason: "exec-event" }),
+            );
+          }
+          if (routeRegistration && !keepRoutedSuccessDeliveryContext) {
+            forgetNodeExecDeliveryContext(routeRegistration);
+          }
+          return;
+        }
+        throw error;
+      }
     });
   },
   "node.invoke.result": handleNodeInvokeResult,

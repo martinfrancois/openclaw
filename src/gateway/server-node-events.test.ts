@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  rememberNodeExecDeliveryContext,
+  resolveNodeExecDeliveryContext,
+  resetNodeExecDeliveryContextRegistryForTests,
+} from "../infra/node-exec-delivery-context.js";
+import { markExecFinishedDelivered } from "./node-exec-finished-dedupe.js";
 import type { loadSessionEntry as loadSessionEntryType } from "./session-utils.js";
 
 const buildSessionLookup = (
@@ -172,6 +178,7 @@ function buildCtx(): NodeEventContext {
 describe("node exec events", () => {
   beforeEach(() => {
     resetNodeEventDeduplicationForTests();
+    resetNodeExecDeliveryContextRegistryForTests();
     enqueueSystemEventMock.mockClear();
     enqueueSystemEventMock.mockReturnValue(true);
     requestHeartbeatNowMock.mockClear();
@@ -182,7 +189,7 @@ describe("node exec events", () => {
     sanitizeInboundSystemTagsMock.mockClear();
   });
 
-  it("enqueues exec.started events", async () => {
+  it("does not queue or wake for exec.started events", async () => {
     const ctx = buildCtx();
     await handleNodeEvent(ctx, "node-1", {
       event: "exec.started",
@@ -193,14 +200,8 @@ describe("node exec events", () => {
       }),
     });
 
-    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
-      "Exec started (node=node-1 id=run-1): ls -la",
-      { sessionKey: "agent:main:main", contextKey: "exec:run-1", trusted: false },
-    );
-    expect(requestHeartbeatNowMock).toHaveBeenCalledWith({
-      reason: "exec-event",
-      sessionKey: "agent:main:main",
-    });
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
   });
 
   it("enqueues exec.finished events with output", async () => {
@@ -220,6 +221,202 @@ describe("node exec events", () => {
       { sessionKey: "node-node-2", contextKey: "exec:run-2", trusted: false },
     );
     expect(requestHeartbeatNowMock).toHaveBeenCalledWith({ reason: "exec-event" });
+  });
+
+  it("uses the run delivery context instead of current session routing for exec.finished", async () => {
+    loadSessionEntryMock.mockReturnValueOnce(
+      buildSessionLookup("agent:main:main", {
+        lastChannel: "slack",
+        lastTo: "channel:C-current",
+        lastAccountId: "workspace-current",
+        lastThreadId: "1710000000.001",
+      }),
+    );
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-2-route",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
+    });
+
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-2-route",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+        deliveryContext: {
+          channel: "telegram",
+          to: "channel:spoofed",
+          accountId: "spoofed",
+          threadId: 999,
+        },
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-2-route, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-2-route",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          accountId: "primary",
+          threadId: 47,
+        },
+        trusted: false,
+      },
+    );
+  });
+
+  it("canonicalizes aliased session keys before consuming cached exec routes", async () => {
+    loadSessionEntryMock.mockReturnValueOnce(
+      buildSessionLookup("agent:main:main", {
+        lastChannel: "slack",
+        lastTo: "channel:C-current",
+        lastAccountId: "workspace-current",
+        lastThreadId: "1710000000.001",
+      }),
+    );
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-aliased-route",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
+    });
+
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "main",
+        runId: "run-aliased-route",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-aliased-route, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-aliased-route",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          accountId: "primary",
+          threadId: 47,
+        },
+        trusted: false,
+      },
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-aliased-route",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("recovers the run delivery context from durable cache after a gateway restart", async () => {
+    loadSessionEntryMock.mockReturnValueOnce(
+      buildSessionLookup("agent:main:main", {
+        lastChannel: "slack",
+        lastTo: "channel:C-current",
+        lastAccountId: "workspace-current",
+        lastThreadId: "1710000000.001",
+      }),
+    );
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-2-restart-route",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
+    });
+    resetNodeExecDeliveryContextRegistryForTests({ clearPersisted: false });
+
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-2-restart-route",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+        deliveryContext: {
+          channel: "telegram",
+          to: "channel:spoofed",
+          accountId: "spoofed",
+          threadId: 999,
+        },
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-2-restart-route, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-2-restart-route",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          accountId: "primary",
+          threadId: 47,
+        },
+        trusted: false,
+      },
+    );
+  });
+
+  it("does not route from untrusted node-provided delivery metadata without a gateway record", async () => {
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-untrusted-route",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100999",
+          accountId: "spoofed",
+          threadId: 99,
+        },
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-untrusted-route, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-untrusted-route",
+        trusted: false,
+      },
+    );
   });
 
   it("dedupes duplicate exec.finished events for the same runId on the same session", async () => {
@@ -251,6 +448,193 @@ describe("node exec events", () => {
         trusted: false,
       },
     );
+  });
+
+  it("drops pre-delivered exec.finished events and consumes their cached route", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    markExecFinishedDelivered({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered",
+    });
+    const ctx = buildCtx();
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("does not dedupe exec.finished events from different nodes that reuse the same runId", async () => {
+    const ctx = buildCtx();
+    const payloadJSON = JSON.stringify({
+      sessionKey: "agent:main:main",
+      runId: "run-dup-cross-node",
+      exitCode: 0,
+      timedOut: false,
+      output: "done",
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON,
+    });
+    await handleNodeEvent(ctx, "node-3", {
+      event: "exec.finished",
+      payloadJSON,
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledTimes(2);
+    expect(requestHeartbeatNowMock).toHaveBeenCalledTimes(2);
+    expect(enqueueSystemEventMock).toHaveBeenNthCalledWith(
+      1,
+      "Exec finished (node=node-2 id=run-dup-cross-node, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-dup-cross-node",
+        trusted: false,
+      },
+    );
+    expect(enqueueSystemEventMock).toHaveBeenNthCalledWith(
+      2,
+      "Exec finished (node=node-3 id=run-dup-cross-node, code 0)\ndone",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-dup-cross-node",
+        trusted: false,
+      },
+    );
+  });
+
+  it("drops replayed exec.finished events for the same runId even when output changes", async () => {
+    const ctx = buildCtx();
+    const oldPayloadJSON = JSON.stringify({
+      sessionKey: "agent:main:main",
+      runId: "run-reused",
+      exitCode: 0,
+      timedOut: false,
+      output: "old output",
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: oldPayloadJSON,
+    });
+
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-reused",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: oldPayloadJSON,
+    });
+
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-reused",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-reused",
+        exitCode: 0,
+        timedOut: false,
+        output: "new output",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-reused",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
+  });
+
+  it("allows a reused runId to notify again after a new exec.started event", async () => {
+    const ctx = buildCtx();
+    const payloadJSON = JSON.stringify({
+      sessionKey: "agent:main:main",
+      runId: "run-dup-reused",
+      exitCode: 0,
+      timedOut: false,
+      output: "done",
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON,
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.started",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-dup-reused",
+        command: "echo done",
+      }),
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON,
+    });
+
+    expect(
+      enqueueSystemEventMock.mock.calls.filter(
+        ([text]) => text === "Exec finished (node=node-2 id=run-dup-reused, code 0)\ndone",
+      ),
+    ).toHaveLength(2);
+    expect(requestHeartbeatNowMock).toHaveBeenCalledTimes(2);
   });
 
   it("canonicalizes exec session key before enqueue and wake", async () => {
@@ -294,6 +678,38 @@ describe("node exec events", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+  });
+
+  it("consumes cached exec routes for quiet exec.finished completions", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-quiet-consume",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-quiet-consume",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+      }),
+    });
+
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-quiet-consume",
+      }),
+    ).toBeUndefined();
   });
 
   it("truncates long exec.finished output in system events", async () => {
@@ -381,6 +797,43 @@ describe("node exec events", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+  });
+
+  it("consumes cached exec routes even when notifyOnExit is false", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-silent-consume",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    loadConfigMock.mockReturnValueOnce({
+      session: { mainKey: "agent:main:main" },
+      tools: { exec: { notifyOnExit: false } },
+    } as {
+      session: { mainKey: string };
+      tools: { exec: { notifyOnExit: boolean } };
+    });
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-silent-consume",
+        exitCode: 0,
+      }),
+    });
+
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-silent-consume",
+      }),
+    ).toBeUndefined();
   });
 
   it("suppresses exec.denied when notifyOnExit is false", async () => {
@@ -825,6 +1278,16 @@ describe("notifications changed events", () => {
   });
 
   it("suppresses exec notifyOnExit events when payload opts out", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-n7",
+      sessionKey: "agent:main:main",
+      runId: "approval-1",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
     const ctx = buildCtx();
     await handleNodeEvent(ctx, "node-n7", {
       event: "exec.finished",
@@ -839,6 +1302,13 @@ describe("notifications changed events", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-n7",
+        sessionKey: "agent:main:main",
+        runId: "approval-1",
+      }),
+    ).toBeUndefined();
   });
 });
 

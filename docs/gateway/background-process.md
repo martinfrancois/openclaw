@@ -56,6 +56,8 @@ Config (preferred):
 - `tools.exec.notifyOnExit` (default true): enqueue a system event + request heartbeat when a backgrounded exec exits.
 - `tools.exec.notifyOnExitEmptySuccess` (default false): when true, also enqueue completion events for successful backgrounded runs that produced no output.
 
+Exec completion events are treated specially: when a backgrounded exec wake is handling an exec result, OpenClaw relays that follow-up back to the last user session even if `heartbeat.target` is `none`. That keeps async exec completions user-visible without changing the default routing for unrelated heartbeat work.
+
 ## process tool
 
 Actions:

@@ -288,12 +288,8 @@ describe("exec approvals", () => {
 
   it("reuses approval id as the node runId", async () => {
     let invokeParams: unknown;
-    let agentParams: unknown;
 
     mockAcceptedApprovalFlow({
-      onAgent: (params) => {
-        agentParams = params;
-      },
       onNodeInvoke: (params) => {
         const invoke = params as { command?: string };
         if (invoke.command === "system.run.prepare") {
@@ -332,11 +328,9 @@ describe("exec approvals", () => {
       })
       .toBe(approvalId);
     expect(
-      (invokeParams as { params?: { suppressNotifyOnExit?: boolean } } | undefined)?.params,
-    ).toMatchObject({
-      suppressNotifyOnExit: true,
-    });
-    await expect.poll(() => agentParams, { timeout: 2_000, interval: 1 }).toBeTruthy();
+      (invokeParams as { params?: { suppressNotifyOnExit?: boolean } } | undefined)?.params
+        ?.suppressNotifyOnExit,
+    ).toBeUndefined();
   });
 
   it("skips approval when node allowlist is satisfied", async () => {

@@ -1,4 +1,5 @@
 import type { SkillBinTrustEntry, SystemRunApprovalPlan } from "../infra/exec-approvals.js";
+import type { DeliveryContext } from "../utils/delivery-context.js";
 
 export type SystemRunParams = {
   command: string[];
@@ -13,6 +14,7 @@ export type SystemRunParams = {
   approved?: boolean | null;
   approvalDecision?: string | null;
   runId?: string | null;
+  deliveryContext?: DeliveryContext | null;
   suppressNotifyOnExit?: boolean | null;
 };
 
@@ -30,6 +32,7 @@ export type ExecEventPayload = {
   sessionKey: string;
   runId: string;
   host: string;
+  deliveryContext?: DeliveryContext;
   command?: string;
   exitCode?: number;
   timedOut?: boolean;
@@ -51,6 +54,7 @@ export type ExecFinishedResult = {
 export type ExecFinishedEventParams = {
   sessionKey: string;
   runId: string;
+  deliveryContext?: DeliveryContext;
   commandText: string;
   result: ExecFinishedResult;
   suppressNotifyOnExit?: boolean;

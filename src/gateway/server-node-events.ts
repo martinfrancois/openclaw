@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { resolveNodeExecDeliveryContext } from "../infra/node-exec-delivery-context.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
+import {
+  classifyDuplicateExecFinished,
+  clearRecentExecFinishedForRun,
+  resetExecFinishedDeduplicationForTests,
+} from "./node-exec-finished-dedupe.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
 import {
   agentCommandFromIngress,
@@ -39,11 +45,8 @@ const MAX_EXEC_EVENT_OUTPUT_CHARS = 180;
 const MAX_NOTIFICATION_EVENT_TEXT_CHARS = 120;
 const VOICE_TRANSCRIPT_DEDUPE_WINDOW_MS = 1500;
 const MAX_RECENT_VOICE_TRANSCRIPTS = 200;
-const EXEC_FINISHED_RUN_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
-const MAX_RECENT_EXEC_FINISHED_RUNS = 2000;
 
 const recentVoiceTranscripts = new Map<string, { fingerprint: string; ts: number }>();
-const recentExecFinishedRuns = new Map<string, number>();
 
 function normalizeFiniteInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
@@ -119,46 +122,9 @@ function shouldDropDuplicateVoiceTranscript(params: {
   return false;
 }
 
-function shouldDropDuplicateExecFinished(params: {
-  sessionKey: string;
-  runId: string;
-  now: number;
-}): boolean {
-  const fingerprint = `${params.sessionKey}::${params.runId}`;
-  const previousTs = recentExecFinishedRuns.get(fingerprint);
-  if (
-    typeof previousTs === "number" &&
-    params.now - previousTs <= EXEC_FINISHED_RUN_DEDUPE_WINDOW_MS
-  ) {
-    return true;
-  }
-
-  recentExecFinishedRuns.set(fingerprint, params.now);
-  if (recentExecFinishedRuns.size > MAX_RECENT_EXEC_FINISHED_RUNS) {
-    const cutoff = params.now - EXEC_FINISHED_RUN_DEDUPE_WINDOW_MS;
-    for (const [key, ts] of recentExecFinishedRuns) {
-      if (ts < cutoff) {
-        recentExecFinishedRuns.delete(key);
-      }
-      if (recentExecFinishedRuns.size <= MAX_RECENT_EXEC_FINISHED_RUNS) {
-        break;
-      }
-    }
-    while (recentExecFinishedRuns.size > MAX_RECENT_EXEC_FINISHED_RUNS) {
-      const oldestKey = recentExecFinishedRuns.keys().next().value;
-      if (oldestKey === undefined) {
-        break;
-      }
-      recentExecFinishedRuns.delete(oldestKey);
-    }
-  }
-
-  return false;
-}
-
 export function resetNodeEventDeduplicationForTests() {
   recentVoiceTranscripts.clear();
-  recentExecFinishedRuns.clear();
+  resetExecFinishedDeduplicationForTests();
 }
 
 function compactExecEventOutput(raw: string) {
@@ -633,6 +599,19 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
       // When false, skip system event notifications for node exec events.
       const cfg = loadConfig();
       const notifyOnExit = cfg.tools?.exec?.notifyOnExit !== false;
+      const runId = normalizeOptionalString(obj.runId) ?? "";
+      if (
+        evt.event !== "exec.started" &&
+        runId &&
+        (!notifyOnExit || obj.suppressNotifyOnExit === true)
+      ) {
+        resolveNodeExecDeliveryContext({
+          nodeId,
+          sessionKey,
+          runId,
+          consume: true,
+        });
+      }
       if (!notifyOnExit) {
         return;
       }
@@ -640,7 +619,6 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
         return;
       }
 
-      const runId = normalizeOptionalString(obj.runId) ?? "";
       const command = sanitizeInboundSystemTags(normalizeOptionalString(obj.command) ?? "");
       const exitCode =
         typeof obj.exitCode === "number" && Number.isFinite(obj.exitCode)
@@ -652,52 +630,101 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
 
       let text = "";
       if (evt.event === "exec.started") {
-        text = `Exec started (node=${nodeId}${runId ? ` id=${runId}` : ""})`;
-        if (command) {
-          text += `: ${command}`;
+        if (runId) {
+          clearRecentExecFinishedForRun(nodeId, sessionKey, runId);
         }
+        return;
       } else if (evt.event === "exec.finished") {
+        const pendingDeliveryContext = resolveNodeExecDeliveryContext({
+          nodeId,
+          sessionKey,
+          runId,
+          consume: false,
+        });
         const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
         const compactOutput = compactExecEventOutput(output);
         const shouldNotify = timedOut || exitCode !== 0 || compactOutput.length > 0;
         if (!shouldNotify) {
+          if (runId) {
+            resolveNodeExecDeliveryContext({
+              nodeId,
+              sessionKey,
+              runId,
+              consume: true,
+            });
+          }
           return;
         }
-        if (
-          runId &&
-          shouldDropDuplicateExecFinished({
+        if (runId) {
+          const duplicateDisposition = classifyDuplicateExecFinished({
+            nodeId,
             sessionKey,
             runId,
             now: Date.now(),
-          })
-        ) {
-          return;
+          });
+          if (duplicateDisposition === "pre-delivered") {
+            resolveNodeExecDeliveryContext({
+              nodeId,
+              sessionKey,
+              runId,
+              consume: true,
+            });
+            return;
+          }
+          if (duplicateDisposition === "replay") {
+            return;
+          }
         }
+        const deliveryContext = runId
+          ? resolveNodeExecDeliveryContext({
+              nodeId,
+              sessionKey,
+              runId,
+              consume: true,
+            })
+          : pendingDeliveryContext;
         text = `Exec finished (node=${nodeId}${runId ? ` id=${runId}` : ""}, ${exitLabel})`;
         if (compactOutput) {
           text += `\n${compactOutput}`;
         }
+        const queued = enqueueSystemEvent(text, {
+          sessionKey,
+          contextKey: runId ? `exec:${runId}` : "exec",
+          deliveryContext,
+          trusted: false,
+        });
+        if (queued) {
+          // Scope wakes only for canonical agent sessions. Synthetic node-* fallback
+          // keys should keep legacy unscoped behavior so enabled non-main heartbeat
+          // agents still run when no explicit agent session is provided.
+          requestHeartbeatNow(scopedHeartbeatWakeOptions(sessionKey, { reason: "exec-event" }));
+        }
+        return;
       } else {
+        const deliveryContext = resolveNodeExecDeliveryContext({
+          nodeId,
+          sessionKey,
+          runId,
+          consume: true,
+        });
         text = `Exec denied (node=${nodeId}${runId ? ` id=${runId}` : ""}${reason ? `, ${reason}` : ""})`;
         if (command) {
           text += `: ${command}`;
         }
+        const queued = enqueueSystemEvent(text, {
+          sessionKey,
+          contextKey: runId ? `exec:${runId}` : "exec",
+          deliveryContext,
+          trusted: false,
+        });
+        if (queued) {
+          // Scope wakes only for canonical agent sessions. Synthetic node-* fallback
+          // keys should keep legacy unscoped behavior so enabled non-main heartbeat
+          // agents still run when no explicit agent session is provided.
+          requestHeartbeatNow(scopedHeartbeatWakeOptions(sessionKey, { reason: "exec-event" }));
+        }
+        return;
       }
-
-      const queued = enqueueSystemEvent(text, {
-        sessionKey,
-        contextKey: runId ? `exec:${runId}` : "exec",
-        trusted: false,
-      });
-      if (queued) {
-        // Scope wakes only for canonical agent sessions. Synthetic node-* fallback
-        // keys should keep legacy unscoped behavior so enabled non-main heartbeat
-        // agents still run when no explicit agent session is provided.
-        requestHeartbeatNow(
-          scopedHeartbeatWakeOptions(sessionKey, { reason: "exec-event", coalesceMs: 0 }),
-        );
-      }
-      return;
     }
     case "push.apns.register": {
       const obj = parsePayloadObject(evt.payloadJSON);

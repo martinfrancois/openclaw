@@ -1,3 +1,4 @@
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import { loadConfig } from "../io.js";
 import { resolveStorePath } from "./paths.js";
@@ -32,7 +33,10 @@ export function extractDeliveryInfo(sessionKey: string | undefined): {
     | undefined;
   try {
     const cfg = loadConfig();
-    const storePath = resolveStorePath(cfg.session?.store);
+    const parsedAgentSession = parseAgentSessionKey(baseSessionKey);
+    const storePath = resolveStorePath(cfg.session?.store, {
+      agentId: parsedAgentSession?.agentId,
+    });
     const store = loadSessionStore(storePath);
     let entry = store[sessionKey];
     let storedDeliveryContext = deliveryContextFromSession(entry);

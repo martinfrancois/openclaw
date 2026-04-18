@@ -1120,6 +1120,363 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
+  it("does not suppress different quiet exec completions that humanize to the same fallback text", async () => {
+    const tmpDir = await createCaseDir("hb-exec-dup-distinct");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "whatsapp" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Exec completed (review-a, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-a",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 0,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      enqueueSystemEvent("Exec completed (review-b, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-b",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 60_000,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(2);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe(
+        "The task completed successfully (exit code 0).",
+      );
+      expect(sendWhatsApp.mock.calls[1]?.[1]).toBe(
+        "The task completed successfully (exit code 0).",
+      );
+      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+        string,
+        { lastHeartbeatText?: string }
+      >;
+      expect(store[sessionKey]?.lastHeartbeatText).toContain("Exec completed (review-b, code 0)");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("preserves mixed wake-batch content when HEARTBEAT_OK falls back to exec-event text", async () => {
+    const tmpDir = await createCaseDir("hb-exec-mixed-fallback");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "whatsapp" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    const replySpy = vi.fn().mockResolvedValue({ text: "HEARTBEAT_OK" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Exec completed (review-run, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-run",
+      });
+      enqueueSystemEvent("Reminder: follow up with the reviewer tomorrow", {
+        sessionKey,
+        contextKey: "reminder:review-follow-up",
+      });
+
+      await runHeartbeatOnce({
+        cfg,
+        reason: "hook:wake",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 0,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe(
+        "The task completed successfully (exit code 0).\n\nReminder: follow up with the reviewer tomorrow",
+      );
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("does not suppress different exec completions that share the same plain-language summary", async () => {
+    const tmpDir = await createCaseDir("hb-exec-dup-plain-language");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "whatsapp" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "The task completed successfully (exit code 0)." });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Exec completed (review-a, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-a",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 0,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      enqueueSystemEvent("Exec completed (review-b, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-b",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 60_000,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(2);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe(
+        "The task completed successfully (exit code 0).",
+      );
+      expect(sendWhatsApp.mock.calls[1]?.[1]).toBe(
+        "The task completed successfully (exit code 0).",
+      );
+      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+        string,
+        { lastHeartbeatText?: string }
+      >;
+      expect(store[sessionKey]?.lastHeartbeatText).toContain("Exec completed (review-b, code 0)");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("does not suppress mixed batches when only the non-exec wake content changes", async () => {
+    const tmpDir = await createCaseDir("hb-exec-mixed-dedupe");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "whatsapp" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    const replySpy = vi.fn().mockResolvedValue({ text: "HEARTBEAT_OK" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Exec completed (review-run, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-run",
+      });
+      enqueueSystemEvent("Reminder: review queue A", {
+        sessionKey,
+        contextKey: "reminder:queue-a",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "hook:wake",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 0,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      enqueueSystemEvent("Exec completed (review-run, code 0)", {
+        sessionKey,
+        contextKey: "exec:review-run",
+      });
+      enqueueSystemEvent("Reminder: review queue B", {
+        sessionKey,
+        contextKey: "reminder:queue-b",
+      });
+      await runHeartbeatOnce({
+        cfg,
+        reason: "hook:wake",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          nowMs: 60_000,
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(2);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain("Reminder: review queue A");
+      expect(sendWhatsApp.mock.calls[1]?.[1]).toContain("Reminder: review queue B");
+      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+        string,
+        { lastHeartbeatText?: string }
+      >;
+      expect(store[sessionKey]?.lastHeartbeatText).toContain("Reminder: review queue B");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("humanizes parenthesized exec finished fallback text", async () => {
+    const tmpDir = await createCaseDir("hb-exec-finished-parenthesized");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "whatsapp" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Exec finished (node=node-a id=run-a, code 0)\ndone", {
+        sessionKey,
+        contextKey: "exec:run-a",
+      });
+
+      await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, {
+          getReplyFromConfig: replySpy,
+        }),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain(
+        "The task completed successfully (exit code 0).",
+      );
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toContain("done");
+      expect(sendWhatsApp.mock.calls[0]?.[1]).not.toContain("Exec finished (node=");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
   it.each(
     typedCases<{
       name: string;
@@ -1594,7 +1951,7 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
-  it("uses an internal-only exec prompt when heartbeat delivery target is none", async () => {
+  it("relays exec completions to the last session when heartbeat delivery target is none", async () => {
     const tmpDir = await createCaseDir("hb-exec-target-none");
     const storePath = path.join(tmpDir, "sessions.json");
     const cfg: OpenClawConfig = {
@@ -1622,6 +1979,72 @@ describe("runHeartbeatOnce", () => {
     enqueueSystemEvent("exec finished: backup completed", {
       sessionKey,
       contextKey: "exec:backup",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      },
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "Handled follow-up" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[0]).toBe("120363401234567890@g.us");
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe("Handled follow-up");
+      const calledCtx = replySpy.mock.calls[0]?.[0] as {
+        Provider?: string;
+        Body?: string;
+        ForceSenderIsOwnerFalse?: boolean;
+      };
+      expect(calledCtx.Provider).toBe("exec-event");
+      expect(calledCtx.ForceSenderIsOwnerFalse).toBe(true);
+      expect(calledCtx.Body).toContain("Please relay the command output to the user");
+      expect(calledCtx.Body).not.toContain("Handle the result internally");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("keeps inline node exec completions internal when target-none exec-event wakes run", async () => {
+    const tmpDir = await createCaseDir("hb-exec-target-none-inline-node");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "none" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "120363401234567890@g.us",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=run-inline, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:run-inline",
     });
 
     const replySpy = vi.fn();
@@ -1640,15 +2063,254 @@ describe("runHeartbeatOnce", () => {
       });
       expect(res.status).toBe("ran");
       expect(sendWhatsApp).toHaveBeenCalledTimes(0);
-      const calledCtx = replySpy.mock.calls[0]?.[0] as {
-        Provider?: string;
-        Body?: string;
-        ForceSenderIsOwnerFalse?: boolean;
-      };
-      expect(calledCtx.Provider).toBe("exec-event");
-      expect(calledCtx.ForceSenderIsOwnerFalse).toBe(true);
-      expect(calledCtx.Body).toContain("Handle the result internally");
-      expect(calledCtx.Body).not.toContain("Please relay the command output to the user");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("relays routed async node exec completions even when heartbeat target is none", async () => {
+    const tmpDir = await createCaseDir("hb-exec-target-none-routed-node");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "none" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "120363401234567890@g.us",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=approval-1, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:approval-1",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      },
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "Handled follow-up" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe("Handled follow-up");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("ignores unrelated reminder routes when relaying routed async node exec completions", async () => {
+    const tmpDir = await createCaseDir("hb-exec-target-none-routed-node-with-reminder");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "none" },
+        },
+      },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "120363401234567890@g.us",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=approval-2, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:approval-2",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      },
+    });
+    enqueueSystemEvent("reminder: check another route", {
+      sessionKey,
+      contextKey: "cron:other-route",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100999",
+      },
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "Handled follow-up" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[0]).toBe("120363401234567890@g.us");
+      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe("Handled follow-up");
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("does not bypass alerts-disabled when rerouted exec fallback resolves to a real destination", async () => {
+    const tmpDir = await createCaseDir("hb-exec-target-none-reroute-alerts-disabled");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "none" },
+        },
+      },
+      channels: {
+        whatsapp: {
+          allowFrom: ["*"],
+          heartbeat: {
+            showOk: false,
+            showAlerts: false,
+            useIndicator: false,
+          },
+        },
+      },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "120363401234567890@g.us",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=approval-3, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:approval-3",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      },
+    });
+    enqueueSystemEvent("Reminder: follow up in the same topic", {
+      sessionKey,
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).not.toHaveBeenCalled();
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
+  it("does not reroute exec fallbacks onto a DM when directPolicy blocks delivery", async () => {
+    const tmpDir = await createCaseDir("hb-exec-target-none-reroute-direct-policy-block");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: { every: "5m", target: "none", directPolicy: "block" },
+        },
+      },
+      channels: {
+        whatsapp: {
+          allowFrom: ["*"],
+        },
+      },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "15551234567@s.whatsapp.net",
+          chatType: "direct",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=approval-dm, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:approval-dm",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "15551234567@s.whatsapp.net",
+      },
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "Handled follow-up" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).not.toHaveBeenCalled();
     } finally {
       replySpy.mockReset();
     }

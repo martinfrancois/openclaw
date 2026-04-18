@@ -9,6 +9,10 @@ import {
   getShellPathFromLoginShell,
   resolveShellEnvFallbackTimeoutMs,
 } from "../infra/shell-env.js";
+import {
+  POSIX_INLINE_COMMAND_FLAGS,
+  resolveInlineCommandMatch,
+} from "../infra/shell-inline-command.js";
 import { logInfo } from "../logger.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
@@ -555,6 +559,1701 @@ function splitShellSegmentsOutsideQuotes(
   return segments;
 }
 
+function findShellCommandSubstitutionEnd(source: string, startIndex: number): number | null {
+  if (
+    source[startIndex] !== "$" ||
+    source[startIndex + 1] !== "(" ||
+    source[startIndex + 2] === "("
+  ) {
+    return null;
+  }
+
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let arithmeticDepth = 0;
+  let parameterExpansionDepth = 0;
+  let commandSubstitutionDepth = 1;
+
+  for (let i = startIndex + 2; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    const nextNext = source[i + 2];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (arithmeticDepth > 0) {
+      if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+        arithmeticDepth += 1;
+        if (ch === "$") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === ")" && next === ")") {
+        arithmeticDepth = Math.max(0, arithmeticDepth - 1);
+        i += 1;
+      }
+      continue;
+    }
+
+    if (parameterExpansionDepth > 0) {
+      if (ch === "\\" && next) {
+        i += 1;
+        continue;
+      }
+      if (ch === "$" && next === "{") {
+        parameterExpansionDepth += 1;
+        i += 1;
+        continue;
+      }
+      if (ch === "}") {
+        parameterExpansionDepth = Math.max(0, parameterExpansionDepth - 1);
+      }
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+        continue;
+      }
+      if (ch === "$" && next === "(") {
+        if (nextNext === "(") {
+          arithmeticDepth += 1;
+          i += 2;
+        } else {
+          commandSubstitutionDepth += 1;
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === "$" && next === "{") {
+        parameterExpansionDepth += 1;
+        i += 1;
+        continue;
+      }
+      if (ch === ")") {
+        commandSubstitutionDepth -= 1;
+        if (commandSubstitutionDepth === 0) {
+          return i;
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+      arithmeticDepth += 1;
+      if (ch === "$") {
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === "$" && next === "{") {
+      parameterExpansionDepth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "$" && next === "(") {
+      commandSubstitutionDepth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === ")") {
+      commandSubstitutionDepth -= 1;
+      if (commandSubstitutionDepth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findBacktickCommandSubstitutionEnd(source: string, startIndex: number): number | null {
+  if (source[startIndex] !== "`") {
+    return null;
+  }
+
+  let escaped = false;
+  for (let i = startIndex + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "`") {
+      return i;
+    }
+  }
+  return null;
+}
+
+const SHELL_FUNCTION_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+function findShellFunctionDefinitionBodyStart(
+  source: string,
+  startIndex: number,
+  candidateName: string | null | undefined,
+): number | null {
+  if (
+    source[startIndex] !== "(" ||
+    !candidateName ||
+    !SHELL_FUNCTION_NAME_PATTERN.test(candidateName)
+  ) {
+    return null;
+  }
+
+  let i = startIndex + 1;
+  while (i < source.length && /\s/u.test(source[i] ?? "")) {
+    i += 1;
+  }
+  if (source[i] !== ")") {
+    return null;
+  }
+
+  i += 1;
+  while (i < source.length && /\s/u.test(source[i] ?? "")) {
+    i += 1;
+  }
+  return source[i] === "{" ? i : null;
+}
+
+function findShellBraceGroupEnd(source: string, startIndex: number): number | null {
+  if (source[startIndex] !== "{") {
+    return null;
+  }
+
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let escaped = false;
+  let arithmeticDepth = 0;
+  let parameterExpansionDepth = 0;
+  let braceDepth = 1;
+
+  for (let i = startIndex + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    const nextNext = source[i + 2];
+
+    if (inComment) {
+      if (ch === "\n" || ch === "\r") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (arithmeticDepth > 0) {
+      if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+        arithmeticDepth += 1;
+        if (ch === "$") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === ")" && next === ")") {
+        arithmeticDepth = Math.max(0, arithmeticDepth - 1);
+        i += 1;
+      }
+      continue;
+    }
+
+    if (parameterExpansionDepth > 0) {
+      if (ch === "\\" && next) {
+        i += 1;
+        continue;
+      }
+      if (ch === "$" && next === "{") {
+        parameterExpansionDepth += 1;
+        i += 1;
+        continue;
+      }
+      if (ch === "}") {
+        parameterExpansionDepth = Math.max(0, parameterExpansionDepth - 1);
+      }
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+        continue;
+      }
+      if (ch === "$" && next === "(") {
+        if (nextNext === "(") {
+          arithmeticDepth += 1;
+          i += 2;
+        } else {
+          const substitutionEnd = findShellCommandSubstitutionEnd(source, i);
+          if (substitutionEnd !== null) {
+            i = substitutionEnd;
+          }
+        }
+        continue;
+      }
+      if (ch === "$" && next === "{") {
+        parameterExpansionDepth += 1;
+        i += 1;
+        continue;
+      }
+      if (ch === "`") {
+        const substitutionEnd = findBacktickCommandSubstitutionEnd(source, i);
+        if (substitutionEnd !== null) {
+          i = substitutionEnd;
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if (isShellCommentStart(source, i)) {
+      inComment = true;
+      continue;
+    }
+
+    if (ch === "$" && next === "(" && nextNext !== "(") {
+      const substitutionEnd = findShellCommandSubstitutionEnd(source, i);
+      if (substitutionEnd !== null) {
+        i = substitutionEnd;
+        continue;
+      }
+    }
+
+    if (ch === "`") {
+      const substitutionEnd = findBacktickCommandSubstitutionEnd(source, i);
+      if (substitutionEnd !== null) {
+        i = substitutionEnd;
+        continue;
+      }
+    }
+
+    if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+      arithmeticDepth += 1;
+      if (ch === "$") {
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === "$" && next === "{") {
+      parameterExpansionDepth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "{") {
+      braceDepth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      braceDepth -= 1;
+      if (braceDepth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveCapturedBackgroundPidVariableName(value: string): string | null {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=(.*)$/u.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  return match[2] === "$!" ? match[1] : null;
+}
+
+function resolveAssignedShellVariableName(value: string): string | null {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=.*$/u.exec(value.trim());
+  return match?.[1] ?? null;
+}
+
+function resolveAssignedCapturedBackgroundPidCount(
+  value: string,
+  capturedBackgroundPidCounts: ReadonlyMap<string, number>,
+): { append: boolean; name: string; count: number } | null {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)(\+)?=(.*)$/u.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const [, name, appendOperator, rhs] = match;
+  let count = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < rhs.length; i += 1) {
+    const ch = rhs[i];
+    if (!ch) {
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || ch !== "$") {
+      continue;
+    }
+    const next = rhs[i + 1];
+    if (next === "!") {
+      count += 1;
+      i += 1;
+      continue;
+    }
+    if (next === "{") {
+      const end = rhs.indexOf("}", i + 2);
+      if (end > i + 2) {
+        const varName = rhs.slice(i + 2, end);
+        count += capturedBackgroundPidCounts.get(varName) ?? 0;
+        i = end;
+      }
+      continue;
+    }
+    if (!next || !/[A-Za-z_]/u.test(next)) {
+      continue;
+    }
+    let end = i + 2;
+    while (end < rhs.length && /[A-Za-z0-9_]/u.test(rhs[end] ?? "")) {
+      end += 1;
+    }
+    const varName = rhs.slice(i + 1, end);
+    count += capturedBackgroundPidCounts.get(varName) ?? 0;
+    i = end - 1;
+  }
+  return { append: appendOperator === "+", name, count };
+}
+
+function findShellArrayAssignmentEnd(source: string, startIndex: number): number | null {
+  if (source[startIndex] !== "(") {
+    return null;
+  }
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = startIndex + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    if (!ch) {
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) {
+      continue;
+    }
+    if (ch === "(") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return null;
+}
+
+function resolveWaitOperandCapturedPidVariable(
+  waitOperand: string,
+): { expandsAll: boolean; name: string; quoted: boolean } | null {
+  const trimmed = waitOperand.trim();
+  const bareArrayMatch = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}$/u.exec(trimmed);
+  if (bareArrayMatch) {
+    return { expandsAll: true, name: bareArrayMatch[1], quoted: false };
+  }
+  const bareMatch = /^\$([A-Za-z_][A-Za-z0-9_]*)$/u.exec(trimmed);
+  if (bareMatch) {
+    return { expandsAll: false, name: bareMatch[1], quoted: false };
+  }
+  const bracedMatch = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/u.exec(trimmed);
+  if (bracedMatch) {
+    return { expandsAll: false, name: bracedMatch[1], quoted: false };
+  }
+  const quotedBareMatch = /^"\$([A-Za-z_][A-Za-z0-9_]*)"$/u.exec(trimmed);
+  if (quotedBareMatch) {
+    return { expandsAll: false, name: quotedBareMatch[1], quoted: true };
+  }
+  const quotedArrayMatch = /^"\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}"$/u.exec(trimmed);
+  if (quotedArrayMatch) {
+    return { expandsAll: true, name: quotedArrayMatch[1], quoted: true };
+  }
+  const quotedBracedMatch = /^"\$\{([A-Za-z_][A-Za-z0-9_]*)\}"$/u.exec(trimmed);
+  if (quotedBracedMatch) {
+    return { expandsAll: false, name: quotedBracedMatch[1], quoted: true };
+  }
+  return null;
+}
+
+function isJobsPidCommandSubstitution(waitOperand: string): boolean {
+  const trimmed = waitOperand.trim();
+  return /^(?:"\$\(\s*jobs\s+-p\s*\)"|\$\(\s*jobs\s+-p\s*\))$/u.test(trimmed);
+}
+
+function parseWaitArgs(waitArgs: string[]): { operands: string[]; waitsForAny: boolean } | null {
+  let waitsForAny = false;
+  let index = 0;
+  while (index < waitArgs.length) {
+    const arg = waitArgs[index];
+    if (arg === "--") {
+      return { operands: waitArgs.slice(index + 1), waitsForAny };
+    }
+    if (!arg || !/^-[A-Za-z]+$/u.test(arg)) {
+      break;
+    }
+    const optionFlags = arg.slice(1);
+    for (let optionIndex = 0; optionIndex < optionFlags.length; optionIndex += 1) {
+      const option = optionFlags[optionIndex];
+      if (option === "n") {
+        waitsForAny = true;
+        continue;
+      }
+      if (option === "f") {
+        continue;
+      }
+      if (option === "p") {
+        const inlineName = optionFlags.slice(optionIndex + 1);
+        if (!inlineName) {
+          index += 1;
+          if (index >= waitArgs.length) {
+            return null;
+          }
+        }
+        break;
+      }
+      return null;
+    }
+    index += 1;
+  }
+  return { operands: waitArgs.slice(index), waitsForAny };
+}
+
+function stripOuterShellQuotes(token: string): string {
+  const trimmed = token.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === "'" || first === '"') && first === last) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
+function isPosixInlineShellCommandName(commandName: string | null): boolean {
+  if (!commandName) {
+    return false;
+  }
+  return /(^|\/)(sh|bash|dash|fish|ksh|zsh|ash)$/u.test(commandName);
+}
+
+type ShellBackgroundingAnalysis = {
+  hasDetached: boolean;
+  outstandingJobs: number;
+};
+
+function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis {
+  let token = "";
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let escaped = false;
+  let arithmeticDepth = 0;
+  let parameterExpansionDepth = 0;
+  const pendingBackgroundJobsByBlock = [0];
+  let awaitingCommandName = true;
+  let tokenIsCommandName = false;
+  let currentCommandName: string | null = null;
+  let currentCommandArgs: string[] = [];
+  const capturedBackgroundPidCounts = new Map<string, number>();
+  const controlFlowFrames: Array<{
+    terminator: "done" | "esac" | "fi";
+    kind: "case" | "if" | "loop";
+    waitFloor: number;
+  }> = [];
+  const functionBackgroundingByName = new Map<string, ShellBackgroundingAnalysis>();
+
+  const previousSignificantChar = (index: number): string | undefined => {
+    for (let i = index; i >= 0; i -= 1) {
+      const candidate = segment[i];
+      if (!candidate || /\s/u.test(candidate)) {
+        continue;
+      }
+      return candidate;
+    }
+    return undefined;
+  };
+
+  const isStandaloneBraceGroupBoundary = (index: number): boolean => {
+    if (segment[index] !== "{" && segment[index] !== "}") {
+      return false;
+    }
+    if (token.trim() || currentCommandName !== null || currentCommandArgs.length > 0) {
+      return false;
+    }
+    if (!awaitingCommandName) {
+      return false;
+    }
+    if (segment[index] === "{") {
+      const previous = segment[index - 1];
+      const next = segment[index + 1];
+      return (!previous || /[\s;|&(){}]/u.test(previous)) && Boolean(next && /\s/u.test(next));
+    }
+    const previous = previousSignificantChar(index - 1);
+    const next = segment[index + 1];
+    return (!previous || /[;|&(){}]/u.test(previous)) && (!next || /[\s;|&(){}]/u.test(next));
+  };
+
+  const beginToken = () => {
+    if (!token) {
+      tokenIsCommandName = awaitingCommandName;
+    }
+  };
+
+  const flushToken = () => {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      token = "";
+      tokenIsCommandName = false;
+      return;
+    }
+    if (tokenIsCommandName) {
+      currentCommandName = trimmed;
+      currentCommandArgs = [];
+    } else if (currentCommandName) {
+      currentCommandArgs.push(trimmed);
+    }
+    awaitingCommandName = false;
+    token = "";
+    tokenIsCommandName = false;
+  };
+
+  const currentBlockPendingJobs = () =>
+    pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] ?? 0;
+  let shortCircuitWaitFloor = 0;
+  let shortCircuitChainActive = false;
+  const resetShortCircuitWaitFloor = () => {
+    shortCircuitWaitFloor = 0;
+    shortCircuitChainActive = false;
+  };
+  const currentControlFlowWaitFloor = () =>
+    Math.max(
+      controlFlowFrames[controlFlowFrames.length - 1]?.waitFloor ?? 0,
+      shortCircuitChainActive ? shortCircuitWaitFloor : 0,
+    );
+  const detachedAnalysis = (): ShellBackgroundingAnalysis => ({
+    hasDetached: true,
+    outstandingJobs: currentBlockPendingJobs(),
+  });
+  const isCasePatternContext = () =>
+    token.trim().length > 0 &&
+    ((currentCommandName === "case" && currentCommandArgs.includes("in")) ||
+      (controlFlowFrames.at(-1)?.kind === "case" &&
+        currentCommandName === null &&
+        currentCommandArgs.length === 0));
+
+  const resolveTargetedWaitOperandJobCount = (waitOperand: string): number => {
+    if (waitOperand === "$!" || waitOperand === '"$!"' || /^%[\w.+-]*$/u.test(waitOperand)) {
+      return 1;
+    }
+    const capturedVar = resolveWaitOperandCapturedPidVariable(waitOperand);
+    if (!capturedVar) {
+      return 0;
+    }
+    const capturedCount = capturedBackgroundPidCounts.get(capturedVar.name) ?? 0;
+    if (capturedCount <= 0) {
+      return 0;
+    }
+    if (capturedVar.expandsAll) {
+      return capturedCount;
+    }
+    return capturedVar.quoted ? (capturedCount === 1 ? 1 : 0) : capturedCount;
+  };
+
+  const resolveWaitJoinedJobCount = () => {
+    const waitArgs = resolveWaitCommandArgs();
+    if (!waitArgs) {
+      return 0;
+    }
+    const joinablePendingJobs = Math.max(
+      0,
+      currentBlockPendingJobs() - currentControlFlowWaitFloor(),
+    );
+    if (joinablePendingJobs <= 0) {
+      return 0;
+    }
+    const parsedWaitArgs = parseWaitArgs(waitArgs);
+    if (!parsedWaitArgs) {
+      return 0;
+    }
+    const { operands: waitOperands, waitsForAny } = parsedWaitArgs;
+    if (waitOperands.length === 0) {
+      return waitsForAny ? 1 : joinablePendingJobs;
+    }
+    if (waitsForAny) {
+      if (waitOperands.length === 0) {
+        return 1;
+      }
+      return waitOperands.every(
+        (operand) =>
+          isJobsPidCommandSubstitution(operand) || resolveTargetedWaitOperandJobCount(operand) > 0,
+      )
+        ? 1
+        : 0;
+    }
+    const joinedJobCount = waitOperands.reduce((total, operand) => {
+      if (isJobsPidCommandSubstitution(operand)) {
+        return total + joinablePendingJobs;
+      }
+      const operandJobCount = resolveTargetedWaitOperandJobCount(operand);
+      return operandJobCount > 0 ? total + operandJobCount : total;
+    }, 0);
+    if (
+      joinedJobCount <= 0 ||
+      waitOperands.some(
+        (operand) =>
+          !isJobsPidCommandSubstitution(operand) &&
+          resolveTargetedWaitOperandJobCount(operand) <= 0,
+      )
+    ) {
+      return 0;
+    }
+    return Math.min(joinablePendingJobs, joinedJobCount);
+  };
+
+  const resolveAssignmentTokens = (): string[] => {
+    const tokens: string[] = [];
+    if (currentCommandArgs.length === 0 && currentCommandName) {
+      tokens.push(currentCommandName);
+      return tokens;
+    }
+    if (
+      !currentCommandName ||
+      !/^(?:declare|export|local|readonly|typeset)$/u.test(currentCommandName)
+    ) {
+      return tokens;
+    }
+    const assignmentArgs =
+      currentCommandArgs[0] === "--" ? currentCommandArgs.slice(1) : currentCommandArgs;
+    for (const arg of assignmentArgs) {
+      if (!arg || (!arg.includes("=") && arg.startsWith("-"))) {
+        continue;
+      }
+      if (resolveAssignedShellVariableName(arg)) {
+        tokens.push(arg);
+      }
+    }
+    return tokens;
+  };
+
+  const resolveInlineShellCommand = (): string | null => {
+    const argv = stripInlineShellWrapperPrefixes([currentCommandName ?? "", ...currentCommandArgs]);
+    const [executable, ...args] = argv;
+    if (!isPosixInlineShellCommandName(executable)) {
+      return null;
+    }
+    const match = resolveInlineCommandMatch(
+      [executable ?? "", ...args],
+      POSIX_INLINE_COMMAND_FLAGS,
+      { allowCombinedC: true },
+    );
+    return match.command ? stripOuterShellQuotes(match.command) : null;
+  };
+
+  const resolveWaitCommandArgs = (): string[] | null => {
+    if (currentCommandName === "wait") {
+      return currentCommandArgs;
+    }
+    if (currentCommandName === "builtin" && currentCommandArgs[0] === "wait") {
+      return currentCommandArgs.slice(1);
+    }
+    if (currentCommandName === "command") {
+      const args =
+        currentCommandArgs[0] === "--" ? currentCommandArgs.slice(1) : currentCommandArgs;
+      if (args[0] === "wait") {
+        return args.slice(1);
+      }
+    }
+    return null;
+  };
+
+  const finalizeCurrentCommand = (options?: { isFunctionDefinition?: boolean }): boolean => {
+    const inlineShellCommand = resolveInlineShellCommand();
+    if (inlineShellCommand) {
+      const inlineShellAnalysis = analyzeShellBackgrounding(inlineShellCommand);
+      if (inlineShellAnalysis.hasDetached || inlineShellAnalysis.outstandingJobs > 0) {
+        return true;
+      }
+    }
+    if (currentCommandName === "coproc") {
+      return true;
+    }
+    const functionAnalysis = currentCommandName
+      ? functionBackgroundingByName.get(currentCommandName)
+      : undefined;
+    if (!options?.isFunctionDefinition && functionAnalysis?.hasDetached) {
+      return true;
+    }
+    const joinedJobCount = resolveWaitJoinedJobCount();
+    if (joinedJobCount > 0) {
+      pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] = Math.max(
+        0,
+        currentBlockPendingJobs() - joinedJobCount,
+      );
+    }
+    for (const assignmentToken of resolveAssignmentTokens()) {
+      const assignedVarName = resolveAssignedShellVariableName(assignmentToken);
+      if (!assignedVarName) {
+        continue;
+      }
+      const capturedPidAssignment = resolveAssignedCapturedBackgroundPidCount(
+        assignmentToken,
+        capturedBackgroundPidCounts,
+      );
+      if ((capturedPidAssignment?.count ?? 0) > 0) {
+        const existingCount = capturedBackgroundPidCounts.get(assignedVarName) ?? 0;
+        capturedBackgroundPidCounts.set(
+          assignedVarName,
+          capturedPidAssignment?.append
+            ? existingCount + (capturedPidAssignment?.count ?? 0)
+            : (capturedPidAssignment?.count ?? 0),
+        );
+        continue;
+      }
+      const capturedPidVarName = resolveCapturedBackgroundPidVariableName(assignmentToken);
+      if (capturedPidVarName) {
+        capturedBackgroundPidCounts.set(capturedPidVarName, 1);
+      } else {
+        capturedBackgroundPidCounts.delete(assignedVarName);
+      }
+    }
+    if (
+      !options?.isFunctionDefinition &&
+      functionAnalysis &&
+      functionAnalysis.outstandingJobs > 0
+    ) {
+      // Invoking a function whose body leaves detached jobs outstanding should
+      // behave like starting a background job in the current shell: a later
+      // top-level `wait` can still join it before the shell exits.
+      pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] +=
+        functionAnalysis.outstandingJobs;
+    }
+    if (currentCommandName === "if") {
+      controlFlowFrames.push({
+        terminator: "fi",
+        kind: "if",
+        waitFloor: currentControlFlowWaitFloor(),
+      });
+    } else if (currentCommandName === "then" && controlFlowFrames.at(-1)?.kind === "if") {
+      controlFlowFrames[controlFlowFrames.length - 1].waitFloor = currentBlockPendingJobs();
+    } else if (
+      (currentCommandName === "else" || currentCommandName === "elif") &&
+      controlFlowFrames.at(-1)?.kind === "if"
+    ) {
+      controlFlowFrames[controlFlowFrames.length - 1].waitFloor =
+        currentCommandName === "elif" ? currentControlFlowWaitFloor() : currentBlockPendingJobs();
+    } else if (currentCommandName === "case") {
+      controlFlowFrames.push({
+        terminator: "esac",
+        kind: "case",
+        waitFloor: currentBlockPendingJobs(),
+      });
+    } else if (currentCommandName === "while" || currentCommandName === "until") {
+      controlFlowFrames.push({
+        terminator: "done",
+        kind: "loop",
+        waitFloor: currentControlFlowWaitFloor(),
+      });
+    } else if (currentCommandName === "for" || currentCommandName === "select") {
+      controlFlowFrames.push({
+        terminator: "done",
+        kind: "loop",
+        waitFloor: currentBlockPendingJobs(),
+      });
+    } else if (currentCommandName === "do" && controlFlowFrames.at(-1)?.kind === "loop") {
+      controlFlowFrames[controlFlowFrames.length - 1].waitFloor = currentBlockPendingJobs();
+    } else if (controlFlowFrames.at(-1)?.terminator === currentCommandName) {
+      controlFlowFrames.pop();
+    }
+    currentCommandName = null;
+    currentCommandArgs = [];
+    return false;
+  };
+
+  const closeCurrentBlock = () => {
+    if (pendingBackgroundJobsByBlock.length <= 1) {
+      return false;
+    }
+    return (pendingBackgroundJobsByBlock.pop() ?? 0) > 0;
+  };
+
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+    const next = segment[i + 1];
+    const nextNext = segment[i + 2];
+
+    if (inComment) {
+      if (ch === "\n" || ch === "\r") {
+        inComment = false;
+        flushToken();
+        if (finalizeCurrentCommand()) {
+          return detachedAnalysis();
+        }
+        awaitingCommandName = true;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      beginToken();
+      token += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && ch === "\\") {
+      beginToken();
+      token += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (arithmeticDepth > 0) {
+      if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+        arithmeticDepth += 1;
+        beginToken();
+        token += ch;
+        token += next ?? "";
+        if (ch === "$") {
+          token += nextNext ?? "";
+          i += 2;
+        } else {
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === ")" && next === ")") {
+        arithmeticDepth = Math.max(0, arithmeticDepth - 1);
+        beginToken();
+        token += ch;
+        token += next;
+        i += 1;
+        continue;
+      }
+      beginToken();
+      token += ch;
+      continue;
+    }
+
+    if (parameterExpansionDepth > 0) {
+      if (ch === "$" && next === "(" && nextNext !== "(") {
+        const substitutionEnd = findShellCommandSubstitutionEnd(segment, i);
+        if (substitutionEnd !== null) {
+          const substitutionAnalysis = analyzeShellBackgrounding(
+            segment.slice(i + 2, substitutionEnd),
+          );
+          if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+            return detachedAnalysis();
+          }
+          beginToken();
+          token += segment.slice(i, substitutionEnd + 1);
+          i = substitutionEnd;
+          continue;
+        }
+      }
+      if (ch === "`") {
+        const substitutionEnd = findBacktickCommandSubstitutionEnd(segment, i);
+        if (substitutionEnd !== null) {
+          const substitutionAnalysis = analyzeShellBackgrounding(
+            segment.slice(i + 1, substitutionEnd),
+          );
+          if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+            return detachedAnalysis();
+          }
+          beginToken();
+          token += segment.slice(i, substitutionEnd + 1);
+          i = substitutionEnd;
+          continue;
+        }
+      }
+      beginToken();
+      token += ch;
+      if (ch === "\\") {
+        if (next) {
+          token += next;
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === "$" && next === "{") {
+        parameterExpansionDepth += 1;
+        token += next;
+        i += 1;
+        continue;
+      }
+      if (ch === "}") {
+        parameterExpansionDepth = Math.max(0, parameterExpansionDepth - 1);
+      }
+      continue;
+    }
+
+    if (inSingle) {
+      beginToken();
+      token += ch;
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === "$" && next === "(" && nextNext !== "(") {
+        const substitutionEnd = findShellCommandSubstitutionEnd(segment, i);
+        if (substitutionEnd !== null) {
+          const substitutionAnalysis = analyzeShellBackgrounding(
+            segment.slice(i + 2, substitutionEnd),
+          );
+          if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+            return detachedAnalysis();
+          }
+          beginToken();
+          token += segment.slice(i, substitutionEnd + 1);
+          i = substitutionEnd;
+          continue;
+        }
+      }
+      if (ch === "`") {
+        const substitutionEnd = findBacktickCommandSubstitutionEnd(segment, i);
+        if (substitutionEnd !== null) {
+          const substitutionAnalysis = analyzeShellBackgrounding(
+            segment.slice(i + 1, substitutionEnd),
+          );
+          if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+            return detachedAnalysis();
+          }
+          beginToken();
+          token += segment.slice(i, substitutionEnd + 1);
+          i = substitutionEnd;
+          continue;
+        }
+      }
+      beginToken();
+      token += ch;
+      if (ch === '"') {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      beginToken();
+      token += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      beginToken();
+      token += ch;
+      continue;
+    }
+
+    if (isShellCommentStart(segment, i)) {
+      inComment = true;
+      flushToken();
+      continue;
+    }
+
+    if ((ch === "$" && next === "(" && nextNext === "(") || (ch === "(" && next === "(")) {
+      arithmeticDepth += 1;
+      token += ch;
+      token += next ?? "";
+      if (ch === "$") {
+        token += nextNext ?? "";
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === "$" && next === "{") {
+      parameterExpansionDepth += 1;
+      beginToken();
+      token += ch;
+      token += next;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "$" && next === "(" && nextNext !== "(") {
+      const substitutionEnd = findShellCommandSubstitutionEnd(segment, i);
+      if (substitutionEnd !== null) {
+        const substitutionAnalysis = analyzeShellBackgrounding(
+          segment.slice(i + 2, substitutionEnd),
+        );
+        if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+          return detachedAnalysis();
+        }
+        beginToken();
+        token += segment.slice(i, substitutionEnd + 1);
+        i = substitutionEnd;
+        continue;
+      }
+    }
+
+    if (ch === "`") {
+      const substitutionEnd = findBacktickCommandSubstitutionEnd(segment, i);
+      if (substitutionEnd !== null) {
+        const substitutionAnalysis = analyzeShellBackgrounding(
+          segment.slice(i + 1, substitutionEnd),
+        );
+        if (substitutionAnalysis.hasDetached || substitutionAnalysis.outstandingJobs > 0) {
+          return detachedAnalysis();
+        }
+        beginToken();
+        token += segment.slice(i, substitutionEnd + 1);
+        i = substitutionEnd;
+        continue;
+      }
+    }
+
+    if (ch === "&") {
+      if (next === "&") {
+        flushToken();
+        if (finalizeCurrentCommand()) {
+          return detachedAnalysis();
+        }
+        shortCircuitWaitFloor = shortCircuitChainActive
+          ? Math.max(shortCircuitWaitFloor, currentBlockPendingJobs())
+          : currentBlockPendingJobs();
+        shortCircuitChainActive = true;
+        awaitingCommandName = true;
+        i += 1;
+        continue;
+      }
+      if (next === "!" || next === "|") {
+        return detachedAnalysis();
+      }
+      if (segment[i - 1] === ";") {
+        awaitingCommandName = true;
+        continue;
+      }
+      const previous = previousSignificantChar(i - 1);
+      if (next === ">" || previous === ">" || previous === "<" || previous === "|") {
+        token += ch;
+        continue;
+      }
+      if (isCasePatternContext()) {
+        token += ch;
+        continue;
+      }
+      flushToken();
+      if (finalizeCurrentCommand()) {
+        return detachedAnalysis();
+      }
+      resetShortCircuitWaitFloor();
+      pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] += 1;
+      awaitingCommandName = true;
+      continue;
+    }
+
+    if (ch === "|" && next === "|") {
+      flushToken();
+      if (finalizeCurrentCommand()) {
+        return detachedAnalysis();
+      }
+      shortCircuitWaitFloor = shortCircuitChainActive
+        ? Math.max(shortCircuitWaitFloor, currentBlockPendingJobs())
+        : currentBlockPendingJobs();
+      shortCircuitChainActive = true;
+      awaitingCommandName = true;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "\n" || ch === "\r") {
+      flushToken();
+      if (finalizeCurrentCommand()) {
+        return detachedAnalysis();
+      }
+      resetShortCircuitWaitFloor();
+      awaitingCommandName = true;
+      continue;
+    }
+
+    if (/\s/u.test(ch)) {
+      flushToken();
+      if (
+        currentCommandArgs.length === 0 &&
+        /^(?:do|elif|else|if|then|until|while)$/u.test(currentCommandName ?? "")
+      ) {
+        if (finalizeCurrentCommand()) {
+          return detachedAnalysis();
+        }
+        awaitingCommandName = true;
+      }
+      continue;
+    }
+
+    if (
+      ch === "{" &&
+      currentCommandName === "function" &&
+      currentCommandArgs.length === 1 &&
+      SHELL_FUNCTION_NAME_PATTERN.test(currentCommandArgs[0] ?? "")
+    ) {
+      const functionName = currentCommandArgs[0];
+      const functionBodyEnd = findShellBraceGroupEnd(segment, i);
+      if (functionBodyEnd !== null) {
+        functionBackgroundingByName.set(
+          functionName ?? "",
+          analyzeShellBackgrounding(segment.slice(i + 1, functionBodyEnd)),
+        );
+        finalizeCurrentCommand({ isFunctionDefinition: true });
+        i = functionBodyEnd;
+        continue;
+      }
+    }
+
+    if (isStandaloneBraceGroupBoundary(i)) {
+      awaitingCommandName = true;
+      continue;
+    }
+
+    if (ch === "(" && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/u.test(token.trim())) {
+      const arrayAssignmentEnd = findShellArrayAssignmentEnd(segment, i);
+      if (arrayAssignmentEnd !== null) {
+        beginToken();
+        token += segment.slice(i, arrayAssignmentEnd + 1);
+        i = arrayAssignmentEnd;
+        continue;
+      }
+    }
+
+    if (ch === "(") {
+      const trimmedToken = token.trim();
+      const functionNameCandidate =
+        trimmedToken && (currentCommandName === null || currentCommandName === "function")
+          ? trimmedToken
+          : !trimmedToken && currentCommandArgs.length === 0
+            ? currentCommandName
+            : null;
+      const functionBodyStart = findShellFunctionDefinitionBodyStart(
+        segment,
+        i,
+        functionNameCandidate,
+      );
+      if (functionBodyStart !== null) {
+        const functionName = functionNameCandidate ?? "";
+        flushToken();
+        const functionBodyEnd = findShellBraceGroupEnd(segment, functionBodyStart);
+        if (functionBodyEnd !== null) {
+          functionBackgroundingByName.set(
+            functionName,
+            analyzeShellBackgrounding(segment.slice(functionBodyStart + 1, functionBodyEnd)),
+          );
+          finalizeCurrentCommand({ isFunctionDefinition: true });
+          i = functionBodyEnd;
+          continue;
+        }
+      }
+    }
+
+    if (ch === "|" || ch === ";" || ch === "(" || ch === ")") {
+      flushToken();
+      if (finalizeCurrentCommand()) {
+        return detachedAnalysis();
+      }
+      if (ch !== "(") {
+        resetShortCircuitWaitFloor();
+      }
+      if (ch === "(") {
+        pendingBackgroundJobsByBlock.push(0);
+      } else if (ch === ")" && closeCurrentBlock()) {
+        return detachedAnalysis();
+      }
+      if (ch === "|" || ch === ";" || ch === "(") {
+        awaitingCommandName = true;
+      }
+      continue;
+    }
+
+    beginToken();
+    token += ch;
+  }
+
+  flushToken();
+  if (finalizeCurrentCommand()) {
+    return detachedAnalysis();
+  }
+  const outstandingJobs = pendingBackgroundJobsByBlock.reduce((sum, count) => sum + count, 0);
+  return { hasDetached: false, outstandingJobs };
+}
+
+function hasDetachedShellBackgrounding(segment: string): boolean {
+  const analysis = analyzeShellBackgrounding(segment);
+  return analysis.hasDetached || analysis.outstandingJobs > 0;
+}
+
+function isShellCommentStart(source: string, index: number): boolean {
+  if (source[index] !== "#") {
+    return false;
+  }
+  if (index === 0) {
+    return true;
+  }
+  const previous = source[index - 1];
+  return Boolean(previous && (/\s/u.test(previous) || /[;|&()<>]/u.test(previous)));
+}
+
+function parseHeredocDelimiter(
+  source: string,
+  start: number,
+): { delimiter: string; end: number; expandable: boolean } | null {
+  let i = start;
+  while (i < source.length && (source[i] === " " || source[i] === "\t")) {
+    i += 1;
+  }
+  if (i >= source.length) {
+    return null;
+  }
+
+  const first = source[i];
+  if (first === "'" || first === '"') {
+    const quote = first;
+    i += 1;
+    let delimiter = "";
+    while (i < source.length) {
+      const ch = source[i];
+      if (ch === "\n" || ch === "\r") {
+        return null;
+      }
+      if (quote === '"' && ch === "\\" && i + 1 < source.length) {
+        delimiter += source[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) {
+        return delimiter ? { delimiter, end: i + 1, expandable: false } : null;
+      }
+      delimiter += ch;
+      i += 1;
+    }
+    return null;
+  }
+
+  let delimiter = "";
+  let escapedDelimiter = false;
+  while (i < source.length) {
+    const ch = source[i];
+    if (/\s/u.test(ch) || ch === "|" || ch === "&" || ch === ";" || ch === "<" || ch === ">") {
+      break;
+    }
+    if (ch === "\\" && i + 1 < source.length) {
+      escapedDelimiter = true;
+      delimiter += source[i + 1];
+      i += 2;
+      continue;
+    }
+    delimiter += ch;
+    i += 1;
+  }
+  return delimiter ? { delimiter, end: i, expandable: !escapedDelimiter } : null;
+}
+
+function hasDetachedShellBackgroundingInExpandableText(source: string): boolean {
+  for (let i = 0; i < source.length; i += 1) {
+    if (source[i] === "$" && source[i + 1] === "(" && source[i + 2] !== "(") {
+      const substitutionEnd = findShellCommandSubstitutionEnd(source, i);
+      if (substitutionEnd !== null) {
+        if (hasDetachedShellBackgrounding(source.slice(i + 2, substitutionEnd))) {
+          return true;
+        }
+        i = substitutionEnd;
+      }
+      continue;
+    }
+    if (source[i] === "`") {
+      const substitutionEnd = findBacktickCommandSubstitutionEnd(source, i);
+      if (substitutionEnd !== null) {
+        if (hasDetachedShellBackgrounding(source.slice(i + 1, substitutionEnd))) {
+          return true;
+        }
+        i = substitutionEnd;
+      }
+    }
+  }
+  return false;
+}
+
+function hasDetachedShellBackgroundingInExpandableHeredocBodies(command: string): boolean {
+  type PendingHeredoc = {
+    delimiter: string;
+    stripTabs: boolean;
+    expandable: boolean;
+  };
+
+  const pendingHeredocs: PendingHeredoc[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let escaped = false;
+  let inHeredocBody = false;
+  let heredocLine = "";
+  let currentExpandableBody = "";
+
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    const next = command[i + 1];
+
+    if (inHeredocBody) {
+      if (ch === "\n" || ch === "\r") {
+        const current = pendingHeredocs[0];
+        const line = current?.stripTabs ? heredocLine.replace(/^\t+/, "") : heredocLine;
+        const lineBreak = ch === "\r" && next === "\n" ? "\r\n" : ch;
+        const isDelimiter = current != null && line === current.delimiter;
+        if (current?.expandable && !isDelimiter) {
+          currentExpandableBody += `${heredocLine}${lineBreak}`;
+        }
+        if (isDelimiter) {
+          if (
+            current?.expandable &&
+            hasDetachedShellBackgroundingInExpandableText(currentExpandableBody)
+          ) {
+            return true;
+          }
+          pendingHeredocs.shift();
+          currentExpandableBody = "";
+        }
+        heredocLine = "";
+        if (ch === "\r" && next === "\n") {
+          i += 1;
+        }
+        if (pendingHeredocs.length === 0) {
+          inHeredocBody = false;
+        }
+      } else {
+        heredocLine += ch;
+      }
+      continue;
+    }
+
+    if (inComment) {
+      if (ch === "\n" || ch === "\r") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && !inDouble && ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if (isShellCommentStart(command, i)) {
+      inComment = true;
+      continue;
+    }
+
+    if ((ch === "\n" || ch === "\r") && pendingHeredocs.length > 0) {
+      inHeredocBody = true;
+      heredocLine = "";
+      currentExpandableBody = "";
+      continue;
+    }
+
+    if (ch === "<" && next === "<") {
+      let scanIndex = i + 2;
+      let stripTabs = false;
+      if (command[scanIndex] === "-") {
+        stripTabs = true;
+        scanIndex += 1;
+      }
+      const parsed = parseHeredocDelimiter(command, scanIndex);
+      if (parsed) {
+        pendingHeredocs.push({
+          delimiter: parsed.delimiter,
+          stripTabs,
+          expandable: parsed.expandable,
+        });
+        i = parsed.end - 1;
+      }
+    }
+  }
+
+  if (inHeredocBody && pendingHeredocs.length > 0) {
+    const current = pendingHeredocs[0];
+    const line = current?.stripTabs ? heredocLine.replace(/^\t+/, "") : heredocLine;
+    if (current?.expandable) {
+      if (line !== current.delimiter && heredocLine) {
+        currentExpandableBody += heredocLine;
+      }
+      if (hasDetachedShellBackgroundingInExpandableText(currentExpandableBody)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function stripHeredocBodiesForBackgroundCheck(command: string): string {
+  type PendingHeredoc = {
+    delimiter: string;
+    stripTabs: boolean;
+  };
+
+  const output: string[] = [];
+  const pendingHeredocs: PendingHeredoc[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let escaped = false;
+  let inHeredocBody = false;
+  let heredocLine = "";
+
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    const next = command[i + 1];
+
+    if (inHeredocBody) {
+      if (ch === "\n" || ch === "\r") {
+        const current = pendingHeredocs[0];
+        if (current) {
+          const line = current.stripTabs ? heredocLine.replace(/^\t+/, "") : heredocLine;
+          if (line === current.delimiter) {
+            pendingHeredocs.shift();
+          }
+        }
+        heredocLine = "";
+        output.push(ch);
+        if (ch === "\r" && next === "\n") {
+          output.push(next);
+          i += 1;
+        }
+        if (pendingHeredocs.length === 0) {
+          inHeredocBody = false;
+        }
+      } else {
+        heredocLine += ch;
+      }
+      continue;
+    }
+
+    output.push(ch);
+
+    if (inComment) {
+      if (ch === "\n" || ch === "\r") {
+        inComment = false;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (!inSingle && !inDouble && ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if (isShellCommentStart(command, i)) {
+      inComment = true;
+      continue;
+    }
+
+    if ((ch === "\n" || ch === "\r") && pendingHeredocs.length > 0) {
+      inHeredocBody = true;
+      heredocLine = "";
+      continue;
+    }
+
+    if (ch === "<" && next === "<") {
+      let scanIndex = i + 2;
+      let stripTabs = false;
+      if (command[scanIndex] === "-") {
+        stripTabs = true;
+        scanIndex += 1;
+      }
+      const parsed = parseHeredocDelimiter(command, scanIndex);
+      if (parsed) {
+        pendingHeredocs.push({ delimiter: parsed.delimiter, stripTabs });
+        i = parsed.end - 1;
+      }
+    }
+  }
+
+  return output.join("");
+}
+
+function rejectDetachedShellBackgrounding(command: string): void {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  if (
+    !hasDetachedShellBackgroundingInExpandableHeredocBodies(command) &&
+    !hasDetachedShellBackgrounding(stripHeredocBodiesForBackgroundCheck(command))
+  ) {
+    return;
+  }
+
+  throw new Error(
+    "exec preflight: detached shell backgrounding detected. Use exec background=true or yieldMs so OpenClaw can register a pollable process session, and keep shell-managed background jobs paired with wait before the shell exits.",
+  );
+}
+
 function buildBackgroundExecFollowUpHint(params: {
   notifyOnExit: boolean;
   notifyOnExitEmptySuccess: boolean;
@@ -569,7 +2268,7 @@ function buildBackgroundExecFollowUpHint(params: {
   if (params.notifyOnExitEmptySuccess) {
     return (
       "Use process (list/poll/log/write/kill/clear/remove) for logs, status, or intervention. " +
-      "Confirm completion with process because this session can still finish without another user-visible message."
+      "Completion notifications stay enabled for this exec session, including quiet successful exits without output."
     );
   }
   return (
@@ -768,6 +2467,290 @@ function extractShellWrappedCommandPayload(
     return null;
   }
   return null;
+}
+
+const TIMEOUT_WRAPPER_OPTIONS_WITH_VALUES = new Set(["-k", "-s", "--kill-after", "--signal"]);
+const SUDO_WRAPPER_OPTIONS_WITH_VALUES = new Set([
+  "-C",
+  "-D",
+  "-g",
+  "-p",
+  "-R",
+  "-T",
+  "-U",
+  "-u",
+  "--chdir",
+  "--close-from",
+  "--group",
+  "--host",
+  "--other-user",
+  "--prompt",
+  "--role",
+  "--type",
+  "--user",
+]);
+const SUDO_WRAPPER_STANDALONE_OPTIONS = new Set(["-A", "-E", "--askpass", "--preserve-env"]);
+
+function normalizeInlineWrapperExecutable(token: string | undefined): string {
+  if (!token) {
+    return "";
+  }
+  const base = normalizeOptionalLowercaseString(token.split(/[\\/]/u).at(-1)) ?? "";
+  return base.endsWith(".exe") ? base.slice(0, -4) : base;
+}
+
+function stripInlineTimeoutWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    idx += 1;
+    const option = token.split("=", 1)[0];
+    if (
+      TIMEOUT_WRAPPER_OPTIONS_WITH_VALUES.has(option) &&
+      !token.includes("=") &&
+      idx < argv.length
+    ) {
+      idx += 1;
+    }
+  }
+  return idx >= argv.length ? [] : argv.slice(idx + 1);
+}
+
+function stripInlineSudoWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    idx += 1;
+    const option = token.split("=", 1)[0];
+    if (SUDO_WRAPPER_STANDALONE_OPTIONS.has(option)) {
+      continue;
+    }
+    if (SUDO_WRAPPER_OPTIONS_WITH_VALUES.has(option) && !token.includes("=") && idx < argv.length) {
+      idx += 1;
+    }
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineNiceWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (/^-\d+$/u.test(token) || /^-n\d+$/u.test(token) || /^--adjustment=.+$/u.test(token)) {
+      idx += 1;
+      continue;
+    }
+    if (token === "-n" || token === "--adjustment") {
+      idx += 2;
+      continue;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    idx += 1;
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineSetsidWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    const option = token.split("=", 1)[0];
+    if (
+      option !== "-c" &&
+      option !== "-f" &&
+      option !== "-w" &&
+      option !== "--ctty" &&
+      option !== "--fork" &&
+      option !== "--wait"
+    ) {
+      return argv;
+    }
+    idx += 1;
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineStdbufWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    if (/^-[ioe].+/u.test(token) || /^--(?:input|output|error)=.+$/u.test(token)) {
+      idx += 1;
+      continue;
+    }
+    const option = token.split("=", 1)[0];
+    if (
+      (option === "-i" ||
+        option === "-o" ||
+        option === "-e" ||
+        option === "--input" ||
+        option === "--output" ||
+        option === "--error") &&
+      !token.includes("=") &&
+      idx + 1 < argv.length
+    ) {
+      idx += 2;
+      continue;
+    }
+    return argv;
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineCommandWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    if (token !== "-p") {
+      return argv;
+    }
+    idx += 1;
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineExecWrapperPrefix(argv: string[]): string[] {
+  let idx = 1;
+  while (idx < argv.length) {
+    const token = argv[idx];
+    if (!token) {
+      break;
+    }
+    if (token === "--") {
+      idx += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") {
+      break;
+    }
+    const option = token.split("=", 1)[0];
+    idx += 1;
+    if (option === "-c" || option === "-l") {
+      continue;
+    }
+    if (option === "-a" && !token.includes("=") && idx < argv.length) {
+      idx += 1;
+      continue;
+    }
+    return argv;
+  }
+  return idx >= argv.length ? [] : argv.slice(idx);
+}
+
+function stripInlineShellWrapperPrefixes(argv: string[]): string[] {
+  let remaining = stripPreflightEnvPrefix(argv);
+  while (remaining.length > 0) {
+    const wrapper = normalizeInlineWrapperExecutable(remaining[0]);
+    if (wrapper === "command") {
+      const stripped = stripInlineCommandWrapperPrefix(remaining);
+      if (stripped === remaining) {
+        return remaining;
+      }
+      remaining = stripped;
+      continue;
+    }
+    if (wrapper === "exec") {
+      const stripped = stripInlineExecWrapperPrefix(remaining);
+      if (stripped === remaining) {
+        return remaining;
+      }
+      remaining = stripped;
+      continue;
+    }
+    if (wrapper === "timeout") {
+      remaining = stripInlineTimeoutWrapperPrefix(remaining);
+      continue;
+    }
+    if (wrapper === "sudo") {
+      remaining = stripInlineSudoWrapperPrefix(remaining);
+      continue;
+    }
+    if (wrapper === "nice") {
+      remaining = stripInlineNiceWrapperPrefix(remaining);
+      continue;
+    }
+    if (wrapper === "setsid") {
+      const stripped = stripInlineSetsidWrapperPrefix(remaining);
+      if (stripped === remaining) {
+        return remaining;
+      }
+      remaining = stripped;
+      continue;
+    }
+    if (wrapper === "stdbuf") {
+      const stripped = stripInlineStdbufWrapperPrefix(remaining);
+      if (stripped === remaining) {
+        return remaining;
+      }
+      remaining = stripped;
+      continue;
+    }
+    if (wrapper === "nohup") {
+      remaining = remaining[1] === "--" ? remaining.slice(2) : remaining.slice(1);
+      continue;
+    }
+    return remaining;
+  }
+  return remaining;
 }
 
 function shouldFailClosedInterpreterPreflight(command: string): {
@@ -1624,6 +3607,7 @@ export function createExecTool(
           approvalRunningNoticeMs,
           warnings,
           notifySessionKey,
+          notifyOnExit,
           trustedSafeBinDirs,
         });
       }
@@ -1679,8 +3663,8 @@ export function createExecTool(
       const getWarningText = () => (warnings.length ? `${warnings.join("\n")}\n\n` : "");
       const usePty = params.pty === true && !sandbox;
 
-      // Preflight: catch a common model failure mode (shell syntax leaking into Python/JS sources)
-      // before we execute and burn tokens in cron loops.
+      // Preflight: catch common model failure modes before we execute and burn tokens in cron loops.
+      rejectDetachedShellBackgrounding(params.command);
       await validateScriptFileForShellBleed({ command: params.command, workdir });
 
       const run = await runExecProcess({

@@ -88,6 +88,7 @@ export function isExecCompletionEvent(evt: string): boolean {
   const normalized = normalizeLowercaseStringOrEmpty(evt).trimStart();
   return (
     /^exec finished(?::|\s*\()/.test(normalized) ||
+    normalized.startsWith("exec denied (") ||
     /^exec (completed|failed) \([a-z0-9_-]{1,64}, (code -?\d+|signal [^)]+)\)( :: .*)?$/.test(
       normalized,
     )

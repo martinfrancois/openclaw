@@ -5,6 +5,7 @@ import type { SessionEntry } from "./types.js";
 
 const storeState = vi.hoisted(() => ({
   store: {} as Record<string, SessionEntry>,
+  resolveStorePath: vi.fn(() => "/tmp/sessions.json"),
 }));
 
 vi.mock("../io.js", () => ({
@@ -12,7 +13,7 @@ vi.mock("../io.js", () => ({
 }));
 
 vi.mock("./paths.js", () => ({
-  resolveStorePath: () => "/tmp/sessions.json",
+  resolveStorePath: storeState.resolveStorePath,
 }));
 
 vi.mock("./store.js", () => ({
@@ -35,6 +36,8 @@ beforeAll(async () => {
 beforeEach(() => {
   setActivePluginRegistry(createSessionConversationTestRegistry());
   storeState.store = {};
+  storeState.resolveStorePath.mockClear();
+  storeState.resolveStorePath.mockReturnValue("/tmp/sessions.json");
 });
 
 describe("extractDeliveryInfo", () => {
@@ -213,6 +216,29 @@ describe("extractDeliveryInfo", () => {
         accountId: undefined,
       },
       threadId: "$thread-event",
+    });
+  });
+
+  it("uses the agent-specific session store when the session key targets a non-default agent", () => {
+    const sessionKey = "agent:ops:webchat:dm:user-123";
+    storeState.store[sessionKey] = buildEntry({
+      channel: "webchat",
+      to: "webchat:user-123",
+      accountId: "ops-account",
+    });
+
+    const result = extractDeliveryInfo(sessionKey);
+
+    expect(storeState.resolveStorePath).toHaveBeenCalledWith(undefined, {
+      agentId: "ops",
+    });
+    expect(result).toEqual({
+      deliveryContext: {
+        channel: "webchat",
+        to: "webchat:user-123",
+        accountId: "ops-account",
+      },
+      threadId: undefined,
     });
   });
 });

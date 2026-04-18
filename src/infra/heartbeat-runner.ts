@@ -59,6 +59,12 @@ import {
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
 import { escapeRegExp } from "../utils.js";
+import {
+  deliveryContextKey,
+  mergeDeliveryContext,
+  normalizeDeliveryContext,
+  type DeliveryContext,
+} from "../utils/delivery-context.shared.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { formatErrorMessage, hasErrnoCode } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
@@ -101,6 +107,7 @@ import {
   consumeSystemEventEntries,
   peekSystemEventEntries,
   resolveSystemEventDeliveryContext,
+  type SystemEvent,
 } from "./system-events.js";
 
 export type HeartbeatDeps = OutboundSendDeps &
@@ -490,6 +497,317 @@ function normalizeHeartbeatReply(
   return { shouldSkip: false, text: finalText, hasMedia };
 }
 
+function ensureTrailingPunctuation(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+function capitalizeFirst(text: string): string {
+  if (!text) {
+    return text;
+  }
+  return `${text[0]?.toUpperCase() ?? ""}${text.slice(1)}`;
+}
+
+function humanizeExecCompletionEvent(event: string): string {
+  const trimmed = event.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const completedOrFailedMatch =
+    /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code (-?\d+)|signal ([^)]+))\)(?: :: (.*))?$/i.exec(
+      trimmed,
+    );
+  if (completedOrFailedMatch) {
+    const exitCodeText = completedOrFailedMatch[4];
+    const signalText = completedOrFailedMatch[5];
+    const tailText = completedOrFailedMatch[6]?.trim();
+    const exitCode = exitCodeText ? Number.parseInt(exitCodeText, 10) : null;
+    const statusText = signalText
+      ? `The task failed (${signalText}).`
+      : exitCode === 0
+        ? "The task completed successfully (exit code 0)."
+        : `The task failed (exit code ${exitCodeText}).`;
+    return tailText ? `${statusText}\n\n${tailText}` : statusText;
+  }
+
+  const finishedWithMetadataMatch = /^exec finished \((.*)\)(?:\n([\s\S]*))?$/i.exec(trimmed);
+  if (finishedWithMetadataMatch) {
+    const metadata = finishedWithMetadataMatch[1]?.trim() ?? "";
+    const tailText = finishedWithMetadataMatch[2]?.trim();
+    const exitCodeMatch = /\bcode (-?\d+)\b/i.exec(metadata);
+    const statusText = /\btimeout\b/i.test(metadata)
+      ? "The background task timed out."
+      : exitCodeMatch
+        ? Number.parseInt(exitCodeMatch[1] ?? "", 10) === 0
+          ? "The task completed successfully (exit code 0)."
+          : `The task failed (exit code ${exitCodeMatch[1]}).`
+        : "The background task finished.";
+    return tailText ? `${statusText}\n\n${tailText}` : statusText;
+  }
+
+  const finishedMatch = /^exec finished:\s*(.*)$/i.exec(trimmed);
+  if (finishedMatch) {
+    const detail = finishedMatch[1]?.trim() ?? "";
+    if (!detail) {
+      return "The background task finished.";
+    }
+    const lowerDetail = normalizeLowercaseStringOrEmpty(detail);
+    if (lowerDetail.startsWith("blocked - ")) {
+      const blockedDetail = detail.slice("blocked - ".length).trim();
+      return blockedDetail
+        ? `The background task needs attention. ${ensureTrailingPunctuation(blockedDetail)}`
+        : "The background task needs attention.";
+    }
+    if (lowerDetail === "ok") {
+      return "The background task completed successfully.";
+    }
+    return ensureTrailingPunctuation(capitalizeFirst(detail));
+  }
+
+  const deniedMatch = /^exec denied \((.*)\)(?::\s*([\s\S]*))?$/i.exec(trimmed);
+  if (deniedMatch) {
+    const metadata = deniedMatch[1]?.trim() ?? "";
+    const commandText = deniedMatch[2]?.trim();
+    const reasonMatch = /,\s*([^)]+)$/.exec(metadata);
+    const reasonText = reasonMatch?.[1]?.trim();
+    const statusText = reasonText
+      ? `The background task was denied (${reasonText}).`
+      : "The background task was denied.";
+    return commandText ? `${statusText}\n\nCommand: ${commandText}` : statusText;
+  }
+
+  return trimmed;
+}
+
+function isReminderStyleWakeFallbackEvent(event: string): boolean {
+  const trimmed = event.trim();
+  return /^reminder:/iu.test(trimmed) || /^cron:/iu.test(trimmed);
+}
+
+function isExecWakeFallbackCompanionEvent(event: SystemEvent): boolean {
+  const trimmed = event.text.trim();
+  return (
+    isReminderStyleWakeFallbackEvent(trimmed) || event.contextKey?.startsWith("task:") === true
+  );
+}
+
+function normalizeExecFallbackRoute(context: DeliveryContext | undefined):
+  | {
+      channel: string;
+      to: string;
+      accountId?: string;
+      threadId?: string;
+    }
+  | undefined {
+  if (!context?.channel || !context.to) {
+    return undefined;
+  }
+  let normalizedTo = context.to;
+  let threadId = context.threadId == null ? undefined : String(context.threadId);
+  if (context.channel === "telegram") {
+    const topicMatch = /^(?:telegram|tg):(.+?):(?:topic|thread):([^:]+)$/iu.exec(normalizedTo);
+    if (topicMatch) {
+      normalizedTo = topicMatch[1] ?? normalizedTo;
+      threadId ??= topicMatch[2];
+    }
+  }
+  return {
+    channel: context.channel,
+    to: normalizedTo,
+    accountId: context.accountId ?? undefined,
+    threadId,
+  };
+}
+
+function contextsShareExecFallbackRoute(
+  left: DeliveryContext | undefined,
+  right: DeliveryContext | undefined,
+): boolean {
+  const normalizedLeft = normalizeExecFallbackRoute(left);
+  const normalizedRight = normalizeExecFallbackRoute(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+  if (
+    normalizedLeft.channel !== normalizedRight.channel ||
+    normalizedLeft.to !== normalizedRight.to
+  ) {
+    return false;
+  }
+  if (normalizedLeft.accountId !== normalizedRight.accountId) {
+    return false;
+  }
+  return normalizedLeft.threadId === normalizedRight.threadId;
+}
+
+function resolveExecEventFallbackText(
+  pendingEventEntries: readonly SystemEvent[],
+  responsePrefix: string | undefined,
+  sharedExecCompletionDeliveryContext: DeliveryContext | undefined,
+): string | null {
+  const fallbackEvents = pendingEventEntries
+    .flatMap((event) => {
+      const trimmed = event.text.trim();
+      if (!trimmed) {
+        return [];
+      }
+      if (isExecCompletionEvent(trimmed)) {
+        return [humanizeExecCompletionEvent(trimmed)];
+      }
+      if (!isExecWakeFallbackCompanionEvent(event)) {
+        return [];
+      }
+      if (!sharedExecCompletionDeliveryContext) {
+        return [trimmed];
+      }
+      const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
+      if (
+        !normalizedEventContext?.channel ||
+        !normalizedEventContext.to ||
+        !contextsShareExecFallbackRoute(sharedExecCompletionDeliveryContext, normalizedEventContext)
+      ) {
+        return [];
+      }
+      return [trimmed];
+    })
+    .filter(Boolean);
+  if (fallbackEvents.length === 0) {
+    return null;
+  }
+
+  const combined = fallbackEvents.join("\n\n");
+  if (!responsePrefix || combined.startsWith(responsePrefix)) {
+    return combined;
+  }
+  return `${responsePrefix} ${combined}`;
+}
+
+function resolveExecEventFallbackDedupeText(pendingEvents: string[]): string | null {
+  const trimmedEvents = pendingEvents.map((event) => event.trim()).filter(Boolean);
+  const execEvents = trimmedEvents.filter((event) => isExecCompletionEvent(event));
+  if (execEvents.length === 0) {
+    return null;
+  }
+  const relevantEvents = execEvents.length === trimmedEvents.length ? execEvents : trimmedEvents;
+  return `[exec-event-dedupe]\n${relevantEvents.join("\n\n")}`;
+}
+
+function resolveSharedExecCompletionDeliveryContext(
+  pendingEventEntries: readonly SystemEvent[],
+): DeliveryContext | undefined {
+  const execEvents = pendingEventEntries.filter((event) => isExecCompletionEvent(event.text));
+  if (execEvents.length === 0) {
+    return undefined;
+  }
+
+  const hasEncodedTelegramTopicRoute = (context: DeliveryContext | undefined): boolean =>
+    context?.channel === "telegram" &&
+    typeof context.to === "string" &&
+    /^(?:telegram|tg):.+?:(?:topic|thread):[^:]+$/iu.test(context.to);
+  const mergeEquivalentExecFallbackContext = (
+    left: DeliveryContext | undefined,
+    right: DeliveryContext | undefined,
+  ): DeliveryContext | undefined => {
+    const merged = mergeDeliveryContext(left, right);
+    if (!merged || !contextsShareExecFallbackRoute(left, right)) {
+      return merged;
+    }
+    if (hasEncodedTelegramTopicRoute(left) || !hasEncodedTelegramTopicRoute(right)) {
+      return merged;
+    }
+    return normalizeDeliveryContext({
+      ...merged,
+      to: right?.to,
+    });
+  };
+
+  let sharedContext: DeliveryContext | undefined;
+  for (const event of execEvents) {
+    const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
+    if (!normalizedEventContext?.channel || !normalizedEventContext.to) {
+      return undefined;
+    }
+    if (sharedContext && !contextsShareExecFallbackRoute(sharedContext, normalizedEventContext)) {
+      return undefined;
+    }
+    sharedContext = mergeEquivalentExecFallbackContext(sharedContext, normalizedEventContext);
+  }
+
+  return sharedContext;
+}
+
+function hasOnlySharedRoutedEventsForExecFallback(
+  pendingEventEntries: readonly SystemEvent[],
+  sharedExecCompletionDeliveryContext: DeliveryContext | undefined,
+): boolean {
+  if (!sharedExecCompletionDeliveryContext) {
+    return false;
+  }
+  for (const event of pendingEventEntries) {
+    const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
+    if (!normalizedEventContext?.channel || !normalizedEventContext.to) {
+      return false;
+    }
+    if (
+      !contextsShareExecFallbackRoute(sharedExecCompletionDeliveryContext, normalizedEventContext)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasOnlySharedRoutedNodeExecCompletionsForExplicitExecReply(
+  pendingEventEntries: readonly SystemEvent[],
+  sharedExecCompletionDeliveryContext: DeliveryContext | undefined,
+): boolean {
+  if (!sharedExecCompletionDeliveryContext) {
+    return false;
+  }
+  let sawNodeExecCompletion = false;
+  for (const event of pendingEventEntries) {
+    if (!isExecCompletionEvent(event.text)) {
+      continue;
+    }
+    if (!/^Exec (?:finished|denied) \(node=/iu.test(event.text.trim())) {
+      return false;
+    }
+    const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
+    if (!normalizedEventContext?.channel || !normalizedEventContext.to) {
+      return false;
+    }
+    if (
+      !contextsShareExecFallbackRoute(sharedExecCompletionDeliveryContext, normalizedEventContext)
+    ) {
+      return false;
+    }
+    sawNodeExecCompletion = true;
+  }
+  return sawNodeExecCompletion;
+}
+
+function hasOnlySharedOrUnroutedPendingEventsForExecFallback(
+  pendingEventEntries: readonly SystemEvent[],
+  sharedExecCompletionDeliveryContext: DeliveryContext | undefined,
+): boolean {
+  if (!sharedExecCompletionDeliveryContext) {
+    return false;
+  }
+  for (const event of pendingEventEntries) {
+    const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
+    if (!normalizedEventContext?.channel || !normalizedEventContext.to) {
+      continue;
+    }
+    if (
+      !contextsShareExecFallbackRoute(sharedExecCompletionDeliveryContext, normalizedEventContext)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 type HeartbeatReasonFlags = {
   isExecEventReason: boolean;
   isCronEventReason: boolean;
@@ -765,6 +1083,44 @@ export async function runHeartbeatOnce(opts: {
   }
 
   const previousUpdatedAt = entry?.updatedAt;
+  const hasPendingExecCompletion =
+    preflight.shouldInspectPendingEvents &&
+    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text));
+  const hasOnlyInlineNodeExecCompletionEvents = (() => {
+    if (!preflight.isExecEventReason) {
+      return false;
+    }
+    const execCompletionEntries = preflight.pendingEventEntries.filter((event) =>
+      isExecCompletionEvent(event.text),
+    );
+    return (
+      execCompletionEntries.length > 0 &&
+      execCompletionEntries.every(
+        (event) =>
+          /^Exec (?:finished|denied) \(node=/iu.test(event.text.trim()) &&
+          !normalizeDeliveryContext(event.deliveryContext)?.channel,
+      )
+    );
+  })();
+  const sharedExecCompletionDeliveryContext = hasPendingExecCompletion
+    ? resolveSharedExecCompletionDeliveryContext(preflight.pendingEventEntries)
+    : undefined;
+  const execFallbackTurnSource = sharedExecCompletionDeliveryContext;
+  const canFallbackExecToLast =
+    !hasOnlyInlineNodeExecCompletionEvents &&
+    hasOnlySharedRoutedEventsForExecFallback(
+      preflight.pendingEventEntries,
+      sharedExecCompletionDeliveryContext,
+    );
+  const deliveryHeartbeat =
+    canFallbackExecToLast && heartbeat
+      ? {
+          ...heartbeat,
+          target: "last" as const,
+          to: undefined,
+          accountId: undefined,
+        }
+      : heartbeat;
 
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
@@ -775,12 +1131,20 @@ export async function runHeartbeatOnce(opts: {
   const delivery = resolveHeartbeatDeliveryTarget({
     cfg,
     entry,
-    heartbeat,
-    // Isolated heartbeat runs drain system events from their dedicated
-    // `:heartbeat` session, not from the base session we peek during preflight.
-    // Reusing base-session turnSource routing here can pin later isolated runs
-    // to stale channels/threads because that base-session event context remains queued.
-    turnSource: useIsolatedSession ? undefined : preflight.turnSourceDeliveryContext,
+    heartbeat: deliveryHeartbeat,
+    // Async exec completions should be able to relay back to the last user even
+    // when normal heartbeat delivery is pinned elsewhere, but only when every
+    // pending exec event in this run resolves to the same delivery context.
+    // Mixed-route batches fall back to the configured heartbeat target to avoid
+    // cross-user leakage.
+    allowAsyncWakeFallbackToLast: canFallbackExecToLast,
+    // Isolated heartbeat runs usually ignore base-session turnSource routing so
+    // stale queued context cannot pin later scheduled runs to the wrong thread.
+    // Exec completions are the exception: their queued event delivery context is
+    // the route we need to preserve when falling back to the last user session.
+    turnSource:
+      execFallbackTurnSource ??
+      (useIsolatedSession ? undefined : preflight.turnSourceDeliveryContext),
   });
   const heartbeatAccountId = heartbeat?.accountId?.trim();
   if (delivery.reason === "unknown-account") {
@@ -803,14 +1167,35 @@ export async function runHeartbeatOnce(opts: {
           accountId: delivery.accountId,
         })
       : { showOk: false, showAlerts: true, useIndicator: true };
-  const { sender } = resolveHeartbeatSenderContext({ cfg, entry, delivery });
+  const promptDelivery =
+    canFallbackExecToLast &&
+    delivery.channel === "none" &&
+    sharedExecCompletionDeliveryContext?.channel &&
+    sharedExecCompletionDeliveryContext.to
+      ? {
+          ...delivery,
+          channel: sharedExecCompletionDeliveryContext.channel,
+          to: sharedExecCompletionDeliveryContext.to,
+          accountId: sharedExecCompletionDeliveryContext.accountId,
+          threadId: sharedExecCompletionDeliveryContext.threadId,
+        }
+      : delivery;
+  const promptVisibility =
+    promptDelivery.channel !== "none"
+      ? resolveHeartbeatVisibility({
+          cfg,
+          channel: promptDelivery.channel,
+          accountId: promptDelivery.accountId,
+        })
+      : visibility;
+  const { sender } = resolveHeartbeatSenderContext({ cfg, entry, delivery: promptDelivery });
   const responsePrefix = resolveEffectiveMessagesConfig(cfg, agentId, {
-    channel: delivery.channel !== "none" ? delivery.channel : undefined,
-    accountId: delivery.accountId,
+    channel: promptDelivery.channel !== "none" ? promptDelivery.channel : undefined,
+    accountId: promptDelivery.accountId,
   }).responsePrefix;
 
   const canRelayToUser = Boolean(
-    delivery.channel !== "none" && delivery.to && visibility.showAlerts,
+    promptDelivery.channel !== "none" && promptDelivery.to && promptVisibility.showAlerts,
   );
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const { prompt, hasExecCompletion, hasCronEvents } = resolveHeartbeatRunPrompt({
@@ -946,10 +1331,12 @@ export async function runHeartbeatOnce(opts: {
     From: sender,
     To: sender,
     OriginatingChannel:
-      !suppressOriginatingContext && delivery.channel !== "none" ? delivery.channel : undefined,
-    OriginatingTo: !suppressOriginatingContext ? delivery.to : undefined,
-    AccountId: delivery.accountId,
-    MessageThreadId: delivery.threadId,
+      !suppressOriginatingContext && promptDelivery.channel !== "none"
+        ? promptDelivery.channel
+        : undefined,
+    OriginatingTo: !suppressOriginatingContext ? promptDelivery.to : undefined,
+    AccountId: promptDelivery.accountId,
+    MessageThreadId: promptDelivery.threadId,
     Provider: hasExecCompletion ? "exec-event" : hasCronEvents ? "cron-event" : "heartbeat",
     SessionKey: runSessionKey,
     ForceSenderIsOwnerFalse: hasExecCompletion || hasUntrustedPendingEvents,
@@ -1020,38 +1407,74 @@ export async function runHeartbeatOnce(opts: {
     const getReplyFromConfig =
       opts.deps?.getReplyFromConfig ?? (await loadHeartbeatRunnerRuntime()).getReplyFromConfig;
     const replyResult = await getReplyFromConfig(ctx, replyOpts, cfg);
-    const replyPayload = resolveHeartbeatReplyPayload(replyResult);
+    let replyPayload = resolveHeartbeatReplyPayload(replyResult);
     const includeReasoning = heartbeat?.includeReasoning === true;
     const reasoningPayloads = includeReasoning
       ? resolveHeartbeatReasoningPayloads(replyResult).filter((payload) => payload !== replyPayload)
       : [];
+    const execEventFallbackText = hasExecCompletion
+      ? resolveExecEventFallbackText(
+          preflight.pendingEventEntries,
+          responsePrefix,
+          sharedExecCompletionDeliveryContext,
+        )
+      : null;
+    const execEventFallbackDedupeText = hasExecCompletion
+      ? resolveExecEventFallbackDedupeText(preflight.pendingEventEntries.map((event) => event.text))
+      : null;
+    let usingQueuedExecFallbackText = false;
 
     if (!replyPayload || !hasOutboundReplyContent(replyPayload)) {
-      await restoreHeartbeatUpdatedAt({
-        storePath,
-        sessionKey,
-        updatedAt: previousUpdatedAt,
-      });
+      if (hasExecCompletion && execEventFallbackText) {
+        replyPayload = { text: execEventFallbackText };
+        usingQueuedExecFallbackText = true;
+      } else {
+        await restoreHeartbeatUpdatedAt({
+          storePath,
+          sessionKey,
+          updatedAt: previousUpdatedAt,
+        });
 
-      const okSent = await maybeSendHeartbeatOk();
-      emitHeartbeatEvent({
-        status: "ok-empty",
-        reason: opts.reason,
-        durationMs: Date.now() - startedAt,
-        channel: delivery.channel !== "none" ? delivery.channel : undefined,
-        accountId: delivery.accountId,
-        silent: !okSent,
-        indicatorType: visibility.useIndicator ? resolveIndicatorType("ok-empty") : undefined,
-      });
-      await updateTaskTimestamps();
-      consumeInspectedSystemEvents();
-      return { status: "ran", durationMs: Date.now() - startedAt };
+        const okSent = await maybeSendHeartbeatOk();
+        emitHeartbeatEvent({
+          status: "ok-empty",
+          reason: opts.reason,
+          durationMs: Date.now() - startedAt,
+          channel: delivery.channel !== "none" ? delivery.channel : undefined,
+          accountId: delivery.accountId,
+          silent: !okSent,
+          indicatorType: visibility.useIndicator ? resolveIndicatorType("ok-empty") : undefined,
+        });
+        await updateTaskTimestamps();
+        consumeInspectedSystemEvents();
+        return { status: "ran", durationMs: Date.now() - startedAt };
+      }
     }
 
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const normalized = normalizeHeartbeatReply(replyPayload, responsePrefix, ackMaxChars);
+    const replyLookedLikeHeartbeatOk = normalized.shouldSkip && !normalized.hasMedia;
+    // For queued exec fallbacks, allow the same route-sharing rules as HEARTBEAT_OK
+    // fallback because the user-visible payload is the queued exec event text.
+    const canRouteQueuedExecFallbackToSharedContext =
+      Boolean(execEventFallbackText) &&
+      hasOnlySharedOrUnroutedPendingEventsForExecFallback(
+        preflight.pendingEventEntries,
+        sharedExecCompletionDeliveryContext,
+      );
     // For exec completion events, don't skip even if the response looks like HEARTBEAT_OK.
     // The model should be responding with exec results, not ack tokens.
+    // If it still returns HEARTBEAT_OK, fall back to the queued exec event text.
+    if (
+      hasExecCompletion &&
+      normalized.shouldSkip &&
+      !normalized.hasMedia &&
+      execEventFallbackText
+    ) {
+      normalized.text = execEventFallbackText;
+      normalized.shouldSkip = false;
+      usingQueuedExecFallbackText = true;
+    }
     // If the reply stripped to empty for another reason, keep the original reply as a last resort.
     const execReplyFallbackText =
       hasExecCompletion && !normalized.text.trim() && replyPayload.text?.trim()
@@ -1062,6 +1485,37 @@ export async function runHeartbeatOnce(opts: {
       normalized.shouldSkip = false;
     }
     const shouldSkipMain = normalized.shouldSkip && !normalized.hasMedia && !hasExecCompletion;
+    const canRouteExplicitExecReplyToSharedContext =
+      !replyLookedLikeHeartbeatOk &&
+      normalized.text.trim().length > 0 &&
+      hasOnlySharedRoutedNodeExecCompletionsForExplicitExecReply(
+        preflight.pendingEventEntries,
+        sharedExecCompletionDeliveryContext,
+      );
+    const outboundDelivery =
+      hasExecCompletion &&
+      delivery.channel === "none" &&
+      delivery.reason !== "dm-blocked" &&
+      sharedExecCompletionDeliveryContext?.channel &&
+      sharedExecCompletionDeliveryContext.to &&
+      (canRouteExplicitExecReplyToSharedContext ||
+        (usingQueuedExecFallbackText && canRouteQueuedExecFallbackToSharedContext))
+        ? {
+            ...delivery,
+            channel: sharedExecCompletionDeliveryContext.channel,
+            to: sharedExecCompletionDeliveryContext.to,
+            accountId: sharedExecCompletionDeliveryContext.accountId,
+            threadId: sharedExecCompletionDeliveryContext.threadId,
+          }
+        : delivery;
+    const outboundVisibility =
+      outboundDelivery.channel !== "none"
+        ? resolveHeartbeatVisibility({
+            cfg,
+            channel: outboundDelivery.channel,
+            accountId: outboundDelivery.accountId,
+          })
+        : visibility;
     if (shouldSkipMain && reasoningPayloads.length === 0) {
       await restoreHeartbeatUpdatedAt({
         storePath,
@@ -1074,10 +1528,12 @@ export async function runHeartbeatOnce(opts: {
         status: "ok-token",
         reason: opts.reason,
         durationMs: Date.now() - startedAt,
-        channel: delivery.channel !== "none" ? delivery.channel : undefined,
-        accountId: delivery.accountId,
+        channel: outboundDelivery.channel !== "none" ? outboundDelivery.channel : undefined,
+        accountId: outboundDelivery.accountId,
         silent: !okSent,
-        indicatorType: visibility.useIndicator ? resolveIndicatorType("ok-token") : undefined,
+        indicatorType: outboundVisibility.useIndicator
+          ? resolveIndicatorType("ok-token")
+          : undefined,
       });
       await updateTaskTimestamps();
       consumeInspectedSystemEvents();
@@ -1090,13 +1546,33 @@ export async function runHeartbeatOnce(opts: {
     // This prevents "nagging" when nothing changed but the model repeats the same items.
     const prevHeartbeatText =
       typeof entry?.lastHeartbeatText === "string" ? entry.lastHeartbeatText : "";
+    const prevHeartbeatRouteKey =
+      typeof entry?.lastHeartbeatRouteKey === "string" ? entry.lastHeartbeatRouteKey : undefined;
     const prevHeartbeatAt =
       typeof entry?.lastHeartbeatSentAt === "number" ? entry.lastHeartbeatSentAt : undefined;
+    const heartbeatDedupeText =
+      hasExecCompletion && execEventFallbackDedupeText
+        ? execEventFallbackDedupeText
+        : normalized.text;
+    const heartbeatDedupeRouteKey =
+      hasExecCompletion && execEventFallbackDedupeText
+        ? deliveryContextKey(
+            outboundDelivery.channel !== "none" && outboundDelivery.to
+              ? {
+                  channel: outboundDelivery.channel,
+                  to: outboundDelivery.to,
+                  accountId: outboundDelivery.accountId,
+                  threadId: outboundDelivery.threadId,
+                }
+              : undefined,
+          )
+        : undefined;
     const isDuplicateMain =
       !shouldSkipMain &&
       !mediaUrls.length &&
       Boolean(prevHeartbeatText.trim()) &&
-      normalized.text.trim() === prevHeartbeatText.trim() &&
+      heartbeatDedupeText.trim() === prevHeartbeatText.trim() &&
+      prevHeartbeatRouteKey === heartbeatDedupeRouteKey &&
       typeof prevHeartbeatAt === "number" &&
       startedAt - prevHeartbeatAt < 24 * 60 * 60 * 1000;
 
@@ -1129,21 +1605,21 @@ export async function runHeartbeatOnce(opts: {
           .join("\n")
       : normalized.text;
 
-    if (delivery.channel === "none" || !delivery.to) {
+    if (outboundDelivery.channel === "none" || !outboundDelivery.to) {
       emitHeartbeatEvent({
         status: "skipped",
-        reason: delivery.reason ?? "no-target",
+        reason: outboundDelivery.reason ?? "no-target",
         preview: previewText?.slice(0, 200),
         durationMs: Date.now() - startedAt,
         hasMedia: mediaUrls.length > 0,
-        accountId: delivery.accountId,
+        accountId: outboundDelivery.accountId,
       });
       await updateTaskTimestamps();
       consumeInspectedSystemEvents();
       return { status: "ran", durationMs: Date.now() - startedAt };
     }
 
-    if (!visibility.showAlerts) {
+    if (!outboundVisibility.showAlerts) {
       await updateTaskTimestamps();
       await restoreHeartbeatUpdatedAt({
         storePath,
@@ -1155,17 +1631,17 @@ export async function runHeartbeatOnce(opts: {
         reason: "alerts-disabled",
         preview: previewText?.slice(0, 200),
         durationMs: Date.now() - startedAt,
-        channel: delivery.channel,
+        channel: outboundDelivery.channel,
         hasMedia: mediaUrls.length > 0,
-        accountId: delivery.accountId,
-        indicatorType: visibility.useIndicator ? resolveIndicatorType("sent") : undefined,
+        accountId: outboundDelivery.accountId,
+        indicatorType: outboundVisibility.useIndicator ? resolveIndicatorType("sent") : undefined,
       });
       consumeInspectedSystemEvents();
       return { status: "ran", durationMs: Date.now() - startedAt };
     }
 
-    const deliveryAccountId = delivery.accountId;
-    const heartbeatPlugin = getChannelPlugin(delivery.channel);
+    const deliveryAccountId = outboundDelivery.accountId;
+    const heartbeatPlugin = getChannelPlugin(outboundDelivery.channel);
     if (heartbeatPlugin?.heartbeat?.checkReady) {
       const readiness = await heartbeatPlugin.heartbeat.checkReady({
         cfg,
@@ -1179,11 +1655,11 @@ export async function runHeartbeatOnce(opts: {
           preview: previewText?.slice(0, 200),
           durationMs: Date.now() - startedAt,
           hasMedia: mediaUrls.length > 0,
-          channel: delivery.channel,
-          accountId: delivery.accountId,
+          channel: outboundDelivery.channel,
+          accountId: outboundDelivery.accountId,
         });
         log.info("heartbeat: channel not ready", {
-          channel: delivery.channel,
+          channel: outboundDelivery.channel,
           reason: readiness.reason,
         });
         return { status: "skipped", reason: readiness.reason };
@@ -1192,11 +1668,11 @@ export async function runHeartbeatOnce(opts: {
 
     await deliverOutboundPayloads({
       cfg,
-      channel: delivery.channel,
-      to: delivery.to,
+      channel: outboundDelivery.channel,
+      to: outboundDelivery.to,
       accountId: deliveryAccountId,
       session: outboundSession,
-      threadId: delivery.threadId,
+      threadId: outboundDelivery.threadId,
       payloads: [
         ...reasoningPayloads,
         ...(shouldSkipMain
@@ -1218,7 +1694,8 @@ export async function runHeartbeatOnce(opts: {
       if (current) {
         store[sessionKey] = {
           ...current,
-          lastHeartbeatText: normalized.text,
+          lastHeartbeatText: heartbeatDedupeText,
+          lastHeartbeatRouteKey: heartbeatDedupeRouteKey,
           lastHeartbeatSentAt: startedAt,
         };
         await saveSessionStore(storePath, store);
@@ -1231,9 +1708,9 @@ export async function runHeartbeatOnce(opts: {
       preview: previewText?.slice(0, 200),
       durationMs: Date.now() - startedAt,
       hasMedia: mediaUrls.length > 0,
-      channel: delivery.channel,
-      accountId: delivery.accountId,
-      indicatorType: visibility.useIndicator ? resolveIndicatorType("sent") : undefined,
+      channel: outboundDelivery.channel,
+      accountId: outboundDelivery.accountId,
+      indicatorType: outboundVisibility.useIndicator ? resolveIndicatorType("sent") : undefined,
     });
     await updateTaskTimestamps();
     consumeInspectedSystemEvents();

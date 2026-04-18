@@ -150,6 +150,62 @@ type MockNodeInvokeParams = {
   command?: string;
 };
 
+function createGatewayNodeInvokeTimeoutError(): Error & {
+  gatewayCode: string;
+  details: { nodeError: { code: string; message: string } };
+} {
+  return Object.assign(new Error("UNAVAILABLE: TIMEOUT: node invoke timed out"), {
+    gatewayCode: "UNAVAILABLE",
+    details: {
+      nodeError: {
+        code: "TIMEOUT",
+        message: "node invoke timed out",
+      },
+    },
+  });
+}
+
+function createQueuedUntilForegroundError(): Error & {
+  code: string;
+  details: { code: string; retryable: boolean };
+} {
+  return Object.assign(
+    new Error("UNAVAILABLE: node command queued until iOS returns to foreground"),
+    {
+      code: "UNAVAILABLE",
+      details: {
+        code: "QUEUED_UNTIL_FOREGROUND",
+        retryable: true,
+      },
+    },
+  );
+}
+
+function createSystemRunDeniedError(): Error & {
+  code: string;
+  details: { nodeError: { code: string; message: string } };
+} {
+  return Object.assign(new Error("UNAVAILABLE: SYSTEM_RUN_DENIED: approval required"), {
+    code: "UNAVAILABLE",
+    details: {
+      nodeError: {
+        code: "UNAVAILABLE",
+        message: "SYSTEM_RUN_DENIED: approval required",
+      },
+    },
+  });
+}
+
+function createNodeNotConnectedError(): Error & {
+  code: string;
+  message: string;
+} {
+  return Object.assign(new Error("node not connected"), {
+    code: "UNAVAILABLE",
+    message: "node not connected",
+  });
+}
+
 describe("executeNodeHostCommand", () => {
   beforeAll(async () => {
     ({ executeNodeHostCommand } = await import("./bash-tools.exec-host-node.js"));
@@ -274,6 +330,379 @@ describe("executeNodeHostCommand", () => {
         }),
       }),
     );
+    const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      "Exec finished (node=node-1 id=approval-1, code 0)\nok",
+    );
+  });
+
+  it("sends a direct completion followup for silent async node successes", async () => {
+    callGatewayToolMock.mockImplementation(
+      async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
+        if (method !== "node.invoke") {
+          throw new Error(`unexpected gateway method: ${method}`);
+        }
+        if (params?.command === "system.run.prepare") {
+          return { payload: { plan: preparedPlan } };
+        }
+        if (params?.command === "system.run") {
+          return {
+            payload: {
+              success: true,
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+            },
+          };
+        }
+        throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+      },
+    );
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec finished (node=node-1 id=approval-1, code 0)",
+      );
+    });
+  });
+
+  it("forwards the run delivery context only for async node follow-ups", async () => {
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+
+    expect(callGatewayToolMock).toHaveBeenNthCalledWith(
+      2,
+      "node.invoke",
+      expect.anything(),
+      expect.objectContaining({
+        command: "system.run",
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
+          },
+        }),
+      }),
+    );
+  });
+
+  it("reports a non-terminal timeout when the async node invoke times out", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw new Error("gateway timeout after 35000ms");
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
+    );
+  });
+
+  it("reports a non-terminal timeout when the gateway forwards a node TIMEOUT error", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createGatewayNodeInvokeTimeoutError();
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
+    );
+  });
+
+  it("keeps queued async node invokes pending until the deferred completion arrives", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createQueuedUntilForegroundError();
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      expect.stringContaining("Exec pending (node=node-1 id=approval-1, invoke-unconfirmed)"),
+    );
+  });
+
+  it("keeps explicit system.run denials terminal for async node invokes", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createSystemRunDeniedError();
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+  });
+
+  it("reports explicit system.run denials directly when notifyOnExit is disabled", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createSystemRunDeniedError();
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      notifyOnExit: false,
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec denied (node=node-1 id=approval-1, approval-required): bun ./script.ts",
+      );
+    });
+    const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(invokeParams.params?.suppressNotifyOnExit).toBe(true);
+  });
+
+  it("reports concrete dispatch failures immediately when no deferred result will arrive", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createNodeNotConnectedError();
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec denied (node=node-1 id=approval-1, invoke-failed): bun ./script.ts\nnode not connected",
+      );
+    });
+  });
+
+  it("forwards delivery context for synchronous node execs", async () => {
+    requiresExecApprovalMock.mockReturnValue(false);
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    expect(callGatewayToolMock).toHaveBeenNthCalledWith(
+      2,
+      "node.invoke",
+      expect.anything(),
+      expect.objectContaining({
+        command: "system.run",
+      }),
+    );
+    const syncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: {
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: {
+          channel: string;
+          to: string;
+          accountId: string;
+          threadId: number;
+        };
+      };
+    };
+    expect(syncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(syncInvokeParams.params?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("denies timed-out inline-eval requests instead of invoking the node", async () => {

@@ -426,4 +426,34 @@ describe("sanitizeSystemRunParamsForForwarding", () => {
     });
     expectRejectedForwardingResult(result, "APPROVAL_NODE_MISMATCH", "not valid for this node");
   });
+
+  test("strips caller-supplied deliveryContext from forwarded params", () => {
+    const result = sanitizeSystemRunParamsForForwarding({
+      rawParams: {
+        command: ["echo", "SAFE"],
+        rawCommand: "echo SAFE",
+        sessionKey: "agent:main:main",
+        runId: "run-1",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100999",
+          threadId: 88,
+        },
+      },
+      nodeId: "node-1",
+      client,
+      execApprovalManager: manager(makeRecord("echo SAFE")),
+      nowMs: now,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("unreachable");
+    }
+    expect(result.params).toEqual({
+      command: ["echo", "SAFE"],
+      rawCommand: "echo SAFE",
+      sessionKey: "agent:main:main",
+      runId: "run-1",
+    });
+  });
 });

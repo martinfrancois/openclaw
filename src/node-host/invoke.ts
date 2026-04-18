@@ -20,7 +20,11 @@ import {
 } from "../infra/exec-host.js";
 import { sanitizeHostExecEnv } from "../infra/host-env-security.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
-import { buildSystemRunApprovalPlan, handleSystemRunInvoke } from "./invoke-system-run.js";
+import {
+  buildSystemRunApprovalPlan,
+  handleSystemRunInvoke,
+  isSystemRunInvokeReplyFallbackError,
+} from "./invoke-system-run.js";
 import type {
   ExecEventPayload,
   ExecFinishedEventParams,
@@ -352,6 +356,7 @@ async function sendExecFinishedEvent(
       sessionKey: params.sessionKey,
       runId: params.runId,
       host: "node",
+      deliveryContext: params.deliveryContext,
       command: params.commandText,
       exitCode: params.result.exitCode ?? undefined,
       timedOut: params.result.timedOut,
@@ -536,28 +541,55 @@ export async function handleInvoke(
     return;
   }
 
-  await handleSystemRunInvoke({
-    client,
-    params,
-    skillBins,
-    execHostEnforced,
-    execHostFallbackAllowed,
-    resolveExecSecurity,
-    resolveExecAsk,
-    isCmdExeInvocation,
-    sanitizeEnv,
-    runCommand,
-    runViaMacAppExecHost,
-    sendNodeEvent,
-    buildExecEventPayload,
-    sendInvokeResult: async (result) => {
-      await sendInvokeResult(client, frame, result);
-    },
-    sendExecFinishedEvent: async ({ sessionKey, runId, commandText, result }) => {
-      await sendExecFinishedEvent({ client, sessionKey, runId, commandText, result });
-    },
-    preferMacAppExecHost,
-  });
+  try {
+    await handleSystemRunInvoke({
+      client,
+      params,
+      skillBins,
+      execHostEnforced,
+      execHostFallbackAllowed,
+      resolveExecSecurity,
+      resolveExecAsk,
+      isCmdExeInvocation,
+      sanitizeEnv,
+      runCommand,
+      runViaMacAppExecHost,
+      sendNodeEvent,
+      buildExecEventPayload,
+      sendInvokeResult: async (result) => {
+        if (result.ok) {
+          await client.request("node.invoke.result", buildNodeInvokeResultParams(frame, result));
+          return;
+        }
+        await sendInvokeResult(client, frame, result);
+      },
+      sendExecFinishedEvent: async ({
+        sessionKey,
+        runId,
+        deliveryContext,
+        commandText,
+        result,
+        suppressNotifyOnExit,
+      }) => {
+        await sendExecFinishedEvent({
+          client,
+          sessionKey,
+          runId,
+          deliveryContext,
+          commandText,
+          result,
+          suppressNotifyOnExit,
+        });
+      },
+      preferMacAppExecHost,
+    });
+  } catch (error) {
+    // After system.run falls back to exec.finished delivery, a dropped invoke reply
+    // should not crash the node-host event loop.
+    if (!isSystemRunInvokeReplyFallbackError(error)) {
+      throw error;
+    }
+  }
 }
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- CLI JSON params are typed by the invoked method.

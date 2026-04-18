@@ -720,6 +720,263 @@ describe("resolveSessionDeliveryTarget", () => {
     expect(resolved.to).toBe("-100123");
     expect(resolved.threadId).toBe(42);
   });
+
+  it("ignores explicit heartbeat destinations when exec fallback promotes target=none to last", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        telegram: {
+          allowFrom: ["*"],
+          accounts: {
+            primary: {
+              allowFrom: ["*"],
+            },
+          },
+        },
+      },
+    };
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg,
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-last",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastThreadId: 42,
+        chatType: "group",
+      },
+      heartbeat: {
+        target: "none",
+        to: "telegram:-1009999999999:topic:88",
+        accountId: "missing-account",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "telegram:-1001234567890:topic:42",
+        threadId: 42,
+      },
+    });
+
+    expect(resolved.reason).toBeUndefined();
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBe(42);
+    expect(resolved.accountId).toBeUndefined();
+  });
+
+  it("reuses the session account when exec target-none fallback omits accountId", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {
+        channels: {
+          telegram: {
+            allowFrom: ["*"],
+            accounts: {
+              "newer-bot": {
+                allowFrom: ["*"],
+              },
+            },
+          },
+        },
+      },
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-account-stale",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastAccountId: "newer-bot",
+        chatType: "group",
+      },
+      heartbeat: {
+        target: "none",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "-1001234567890",
+      },
+    });
+
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.accountId).toBe("newer-bot");
+  });
+
+  it("keeps directPolicy blocking when async exec fallback ignores a stale heartbeat.to", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-direct-policy",
+        updatedAt: 1,
+        lastChannel: "imessage",
+        lastTo: "chat-guid-unknown-shape",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "none",
+        to: "stale-chat-guid",
+        directPolicy: "block",
+      },
+      allowAsyncWakeFallbackToLast: true,
+    });
+
+    expect(resolved.channel).toBe("none");
+    expect(resolved.reason).toBe("dm-blocked");
+  });
+
+  it("reuses Telegram topic threads when async exec fallback ignores a stale heartbeat.to", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-topic",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastThreadId: 1122,
+        chatType: "group",
+      },
+      heartbeat: {
+        target: "none",
+        to: "telegram:-1009999999999:topic:88",
+      },
+      allowAsyncWakeFallbackToLast: true,
+    });
+
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBe(1122);
+  });
+
+  it("does not reuse a stale Telegram topic thread when async exec fallback targets the root chat", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-root-chat",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        lastThreadId: 1122,
+        chatType: "group",
+      },
+      heartbeat: {
+        target: "none",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "-1001234567890",
+      },
+    });
+
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBeUndefined();
+  });
+
+  it("does not inherit a stale direct chat hint when async exec fallback has a saved group route", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-saved-group-route",
+        updatedAt: 1,
+        lastChannel: "imessage",
+        lastTo: "chat-guid-unknown-shape",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "none",
+        directPolicy: "block",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "telegram:-1001234567890:topic:47",
+        threadId: 47,
+      },
+    });
+
+    expect(resolved.reason).toBeUndefined();
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBe(47);
+  });
+
+  it("keeps directPolicy blocking when async exec fallback stays on the same unparseable direct route", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-turn-source-direct-policy",
+        updatedAt: 1,
+        lastChannel: "imessage",
+        lastTo: "chat-guid-unknown-shape",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "none",
+        directPolicy: "block",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "imessage",
+        to: "chat-guid-unknown-shape",
+      },
+    });
+
+    expect(resolved.channel).toBe("none");
+    expect(resolved.reason).toBe("dm-blocked");
+  });
+
+  it("keeps directPolicy blocking when async exec fallback switches to another opaque direct route", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-turn-source-direct-switch",
+        updatedAt: 1,
+        lastChannel: "imessage",
+        lastTo: "chat-guid-unknown-shape",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "none",
+        directPolicy: "block",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "imessage",
+        to: "new-chat-guid-unknown-shape",
+      },
+    });
+
+    expect(resolved.channel).toBe("none");
+    expect(resolved.reason).toBe("dm-blocked");
+  });
+
+  it("does not let stale direct metadata block same-channel group exec fallbacks", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-same-channel-group",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "user:42",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "none",
+        directPolicy: "block",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "telegram:-1001234567890:topic:47",
+        threadId: 47,
+      },
+    });
+
+    expect(resolved.reason).toBeUndefined();
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBe(47);
+  });
 });
 
 describe("resolveSessionDeliveryTarget — cross-channel reply guard (#24152)", () => {

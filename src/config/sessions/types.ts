@@ -114,6 +114,8 @@ export type SessionEntry = {
    * Stored on the main session entry.
    */
   lastHeartbeatText?: string;
+  /** Route key paired with lastHeartbeatText when dedupe must stay destination-scoped. */
+  lastHeartbeatRouteKey?: string;
   /** Timestamp (ms) when lastHeartbeatText was delivered. */
   lastHeartbeatSentAt?: number;
   /**

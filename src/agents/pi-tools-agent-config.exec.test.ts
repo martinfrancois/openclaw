@@ -9,6 +9,7 @@ import { getFinishedSession, resetProcessRegistryForTests } from "./bash-process
 import { createOpenClawCodingTools } from "./pi-tools.js";
 
 const isWin = process.platform === "win32";
+// Keep this barely asynchronous so tests exercise the real background-session path without slowing the suite.
 const shortDelayCmd = isWin ? "Start-Sleep -Milliseconds 4" : "sleep 0.004";
 
 async function waitForNotifyEvent(

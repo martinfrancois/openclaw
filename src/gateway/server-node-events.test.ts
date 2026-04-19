@@ -765,6 +765,33 @@ describe("node exec events", () => {
     expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
   });
 
+  it("notifies on quiet exec.finished successes when invoke reply delivery already failed", async () => {
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        runId: "run-quiet-notify-delivery-failed",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+        notifyDeliveryFailed: true,
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-quiet-notify-delivery-failed, code 0)",
+      {
+        deliveryContext: undefined,
+        sessionKey: "node-node-2",
+        contextKey: "exec:run-quiet-notify-delivery-failed",
+        trusted: false,
+      },
+    );
+    expect(requestHeartbeatNowMock).toHaveBeenCalledWith({
+      reason: "exec-event",
+    });
+  });
+
   it("consumes cached exec routes for quiet exec.finished completions", async () => {
     rememberNodeExecDeliveryContext({
       nodeId: "node-2",

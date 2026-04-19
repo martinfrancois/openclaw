@@ -39,6 +39,7 @@ export type ExecEventPayload = {
   success?: boolean;
   output?: string;
   reason?: string;
+  notifyDeliveryFailed?: boolean;
   suppressNotifyOnExit?: boolean;
 };
 
@@ -57,6 +58,7 @@ export type ExecFinishedEventParams = {
   deliveryContext?: DeliveryContext;
   commandText: string;
   result: ExecFinishedResult;
+  notifyDeliveryFailed?: boolean;
   suppressNotifyOnExit?: boolean;
 };
 

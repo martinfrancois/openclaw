@@ -715,7 +715,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("does not tag quiet successful invoke delivery failures as fallback-safe by default", async () => {
+  it("forces a deferred fallback when a quiet successful invoke reply is lost", async () => {
     const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
       HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
     >(async () => undefined);
@@ -747,8 +747,14 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error);
-    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(false);
-    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(true);
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(2);
+    expect(sendExecFinishedEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        notifyDeliveryFailed: true,
+      }),
+    );
   });
 
   it("honors agent-scoped notifyOnExit overrides for relative session keys", async () => {

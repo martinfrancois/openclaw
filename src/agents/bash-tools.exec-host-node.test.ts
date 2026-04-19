@@ -643,7 +643,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("keeps explicit system.run denials on the normal notifyOnExit path", async () => {
+  it("reports explicit system.run denials directly on the normal notifyOnExit path", async () => {
     callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
       if (method !== "node.invoke") {
         throw new Error(`unexpected gateway method: ${method}`);
@@ -676,7 +676,10 @@ describe("executeNodeHostCommand", () => {
     await vi.waitFor(() => {
       expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
     });
-    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      "Exec denied (node=node-1 id=approval-1, approval-required): bun ./script.ts",
+    );
   });
 
   it("reports explicit system.run denials directly when notifyOnExit is disabled", async () => {

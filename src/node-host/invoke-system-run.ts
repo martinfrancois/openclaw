@@ -345,11 +345,24 @@ async function sendSystemRunCompleted(
       loadConfig: opts.loadConfig,
       sessionKey: execution.sessionKey,
     });
-    if (
-      !notifySettings.notifyOnExit ||
-      !shouldEmitExecFinishedFollowUp(result, notifySettings.notifyOnExitEmptySuccess)
-    ) {
+    if (!notifySettings.notifyOnExit) {
       throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
+    }
+    if (!shouldEmitExecFinishedFollowUp(result, notifySettings.notifyOnExitEmptySuccess)) {
+      try {
+        await opts.sendExecFinishedEvent({
+          ...execFinishedEvent,
+          deliveryContext: execution.deliveryContext,
+          notifyDeliveryFailed: true,
+        });
+      } catch (error) {
+        logWarn(
+          `system.run fallback exec.finished delivery failed (runId=${execution.runId}): ${String(
+            error instanceof Error ? error.message : error,
+          )}`,
+        );
+        throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
+      }
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
   }

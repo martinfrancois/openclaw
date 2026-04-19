@@ -350,22 +350,24 @@ async function sendExecFinishedEvent(
   const combined = [params.result.stdout, params.result.stderr, params.result.error]
     .filter(Boolean)
     .join("\n");
-  await sendNodeEvent(
-    params.client,
-    "exec.finished",
-    buildExecEventPayload({
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      host: "node",
-      deliveryContext: params.deliveryContext,
-      command: params.commandText,
-      exitCode: params.result.exitCode ?? undefined,
-      timedOut: params.result.timedOut,
-      success: params.result.success,
-      output: combined,
-      suppressNotifyOnExit: params.suppressNotifyOnExit,
-    }),
-  );
+  await params.client.request("node.event", {
+    event: "exec.finished",
+    payloadJSON: JSON.stringify(
+      buildExecEventPayload({
+        sessionKey: params.sessionKey,
+        runId: params.runId,
+        host: "node",
+        deliveryContext: params.deliveryContext,
+        command: params.commandText,
+        exitCode: params.result.exitCode ?? undefined,
+        timedOut: params.result.timedOut,
+        success: params.result.success,
+        output: combined,
+        notifyDeliveryFailed: params.notifyDeliveryFailed,
+        suppressNotifyOnExit: params.suppressNotifyOnExit,
+      }),
+    ),
+  });
 }
 
 async function runViaMacAppExecHost(params: {

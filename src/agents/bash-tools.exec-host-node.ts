@@ -586,12 +586,10 @@ export async function executeNodeHostCommand(
             return;
           }
           if (isTerminalApprovedNodeInvokeFailure(error)) {
-            if (!notifyOnExit) {
-              await execHostShared.sendExecApprovalFollowupResult(
-                followupTarget,
-                `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
-              );
-            }
+            await execHostShared.sendExecApprovalFollowupResult(
+              followupTarget,
+              `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
+            );
             return;
           }
           await execHostShared.sendExecApprovalFollowupResult(

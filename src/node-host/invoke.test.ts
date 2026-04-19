@@ -156,6 +156,49 @@ describe("handleInvoke", () => {
     });
   });
 
+  it("does not swallow exec.finished delivery failures inside sendExecFinishedEvent", async () => {
+    const client = {
+      request: vi.fn(async (method: string) => {
+        if (method === "node.event") {
+          throw new Error("node.event failed");
+        }
+      }),
+    };
+    handleSystemRunInvokeMock.mockImplementationOnce(async (opts) => {
+      await opts.sendExecFinishedEvent({
+        sessionKey: "agent:main:main",
+        runId: "run-2b",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        commandText: "echo ok",
+        result: {
+          success: true,
+          stdout: "ok",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          error: null,
+        },
+      });
+    });
+
+    await expect(
+      handleInvoke(
+        {
+          id: "req-2b",
+          nodeId: "node-1",
+          command: "system.run",
+          paramsJSON: JSON.stringify({ command: ["echo", "ok"] }),
+        },
+        client as never,
+        { current: async () => [] },
+      ),
+    ).rejects.toThrow("node.event failed");
+  });
+
   it("rethrows non-fallback system.run failures", async () => {
     handleSystemRunInvokeMock.mockRejectedValueOnce(new Error("node.event failed"));
 

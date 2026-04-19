@@ -667,6 +667,7 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
         const compactOutput = compactExecEventOutput(output);
         const successfulExit = obj.success === true || (!timedOut && exitCode === 0);
         const shouldNotify =
+          obj.notifyDeliveryFailed === true ||
           timedOut ||
           exitCode !== 0 ||
           compactOutput.length > 0 ||

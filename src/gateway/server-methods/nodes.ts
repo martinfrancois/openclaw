@@ -442,9 +442,6 @@ function rememberForwardedSystemRunDeliveryContext(
   if (!registration) {
     return;
   }
-  if (registration.sessionKey && registration.runId) {
-    clearRecentExecFinishedForRun(nodeId, registration.sessionKey, registration.runId);
-  }
   if (!registration.deliveryContext) {
     forgetNodeExecDeliveryContext(registration);
     return;
@@ -458,6 +455,9 @@ function rememberForwardedSystemRunDeliveryContext(
     // new retry on a different route. Drop the cache instead of risking misdelivery.
     forgetNodeExecDeliveryContext(registration);
     return;
+  }
+  if (registration.sessionKey && registration.runId) {
+    clearRecentExecFinishedForRun(nodeId, registration.sessionKey, registration.runId);
   }
   rememberNodeExecDeliveryContext(registration);
 }

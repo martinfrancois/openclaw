@@ -2202,6 +2202,11 @@ describe("node.invoke APNs wake path", () => {
   });
 
   it("drops cached delivery context when a reused pending run id switches to a different route", async () => {
+    markExecFinishedDelivered({
+      nodeId: "ios-node-1",
+      sessionKey: "agent:main:main",
+      runId: "run-route-reused-pending-conflict",
+    });
     rememberNodeExecDeliveryContext({
       nodeId: "ios-node-1",
       sessionKey: "agent:main:main",
@@ -2258,6 +2263,14 @@ describe("node.invoke APNs wake path", () => {
         runId: "run-route-reused-pending-conflict",
       }),
     ).toBeUndefined();
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused-pending-conflict",
+        now: Date.now(),
+      }),
+    ).toBe("pre-delivered");
   });
 
   it("clears older dedupe markers when a reused run is dispatched again", async () => {
@@ -2314,7 +2327,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBe("enqueue");
   });
 
-  it("expires stale node exec delivery routes after the replay window", () => {
+  it("keeps node exec delivery routes available beyond one hour", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 
@@ -2330,7 +2343,7 @@ describe("node.invoke APNs wake path", () => {
       },
     });
 
-    vi.advanceTimersByTime(11 * 60 * 1000);
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000);
 
     expect(
       resolveNodeExecDeliveryContext({
@@ -2338,7 +2351,12 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-long",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("does not evict older pending routes when newer runs are registered", () => {

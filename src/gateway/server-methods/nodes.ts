@@ -274,7 +274,7 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
     params.suppressNotifyOnExit === true
       ? undefined
       : !explicitDeliveryContext
-        ? undefined
+        ? trustedSessionDeliveryContext
         : trustedSessionDeliveryContext && sameComparableRoute
           ? trustedComparableThreadId == null ||
             trustedComparableThreadId === explicitComparableThreadId

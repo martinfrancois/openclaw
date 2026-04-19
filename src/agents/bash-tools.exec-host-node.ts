@@ -212,6 +212,17 @@ function summarizeApprovedNodeInvokeResult(params: {
     : `Exec finished (node=${params.nodeId} id=${params.approvalId}, ${exitLabel})`;
 }
 
+function shouldSendApprovedNodeInvokeFollowup(raw: unknown, notifyOnExit: boolean): boolean {
+  if (!notifyOnExit) {
+    return true;
+  }
+  const payload =
+    raw && typeof raw === "object" ? (raw as { payload?: unknown }).payload : undefined;
+  const payloadObj =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return payloadObj.notifyDeliveryFailed === true;
+}
+
 export async function executeNodeHostCommand(
   params: ExecuteNodeHostCommandParams,
 ): Promise<AgentToolResult<ExecToolDetails>> {
@@ -550,7 +561,7 @@ export async function executeNodeHostCommand(
               suppressNotifyOnExit: !notifyOnExit,
             }),
           );
-          if (!notifyOnExit) {
+          if (shouldSendApprovedNodeInvokeFollowup(raw, notifyOnExit)) {
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
               summarizeApprovedNodeInvokeResult({

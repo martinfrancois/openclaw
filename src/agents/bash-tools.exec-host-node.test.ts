@@ -386,6 +386,51 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
+  it("sends a direct completion followup when deferred node delivery failed", async () => {
+    callGatewayToolMock.mockImplementation(
+      async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
+        if (method !== "node.invoke") {
+          throw new Error(`unexpected gateway method: ${method}`);
+        }
+        if (params?.command === "system.run.prepare") {
+          return { payload: { plan: preparedPlan } };
+        }
+        if (params?.command === "system.run") {
+          return {
+            payload: {
+              success: true,
+              stdout: "ok",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+              notifyDeliveryFailed: true,
+            },
+          };
+        }
+        throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+      },
+    );
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec finished (node=node-1 id=approval-1, code 0)\nok",
+      );
+    });
+  });
+
   it("keeps inline node invokes on the direct reply path", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 

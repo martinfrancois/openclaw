@@ -1090,7 +1090,7 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
-  it("does not synthesize a deferred route when system.run omitted deliveryContext", async () => {
+  it("uses the stored session route when system.run omitted deliveryContext", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -1117,8 +1117,13 @@ describe("node.invoke APNs wake path", () => {
 
     expect(nodeRegistry.invoke).toHaveBeenCalledWith(
       expect.objectContaining({
-        params: expect.not.objectContaining({
-          deliveryContext: expect.anything(),
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "signal",
+            to: "+15551234567",
+            accountId: "trusted-account",
+            threadId: "99",
+          },
         }),
       }),
     );
@@ -1128,7 +1133,12 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-no-explicit-delivery-context",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
+    });
   });
 
   it("ignores stripped deliveryContext overrides that change the base route", async () => {

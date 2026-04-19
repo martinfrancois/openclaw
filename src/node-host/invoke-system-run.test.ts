@@ -535,6 +535,11 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendInvokeResult).toHaveBeenCalledTimes(1);
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
+    const payloadJSON = sendInvokeResult.mock.calls[0]?.[0]?.payloadJSON;
+    expect(typeof payloadJSON).toBe("string");
+    expect(JSON.parse(payloadJSON as string)).toMatchObject({
+      notifyDeliveryFailed: true,
+    });
   });
 
   it("emits deferred exec.finished before a successful invoke reply when notifyOnExit is enabled", async () => {

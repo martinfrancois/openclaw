@@ -316,10 +316,17 @@ async function sendSystemRunCompleted(
     }
   }
   let invokeResultError: unknown = null;
+  const invokePayload =
+    execFinishedError && payloadJSON
+      ? (() => {
+          const parsed = safeParseJsonObject(payloadJSON);
+          return parsed ? JSON.stringify({ ...parsed, notifyDeliveryFailed: true }) : payloadJSON;
+        })()
+      : payloadJSON;
   try {
     await opts.sendInvokeResult({
       ok: true,
-      payloadJSON,
+      payloadJSON: invokePayload,
     });
   } catch (error) {
     invokeResultError = error;
@@ -345,6 +352,15 @@ async function sendSystemRunCompleted(
       throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
+  }
+}
+
+function safeParseJsonObject(payloadJSON: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(payloadJSON);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
   }
 }
 

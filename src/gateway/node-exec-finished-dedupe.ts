@@ -70,6 +70,14 @@ export function clearRecentExecFinishedForRun(
   recentExecFinishedRuns.delete(execFinishedFingerprint({ nodeId, sessionKey, runId }));
 }
 
+export function hasPreDeliveredExecFinishedForRun(params: {
+  nodeId: string;
+  sessionKey: string;
+  runId: string;
+}): boolean {
+  return recentExecFinishedRuns.get(execFinishedFingerprint(params))?.preDelivered === true;
+}
+
 export function resetExecFinishedDeduplicationForTests(): void {
   recentExecFinishedRuns.clear();
 }

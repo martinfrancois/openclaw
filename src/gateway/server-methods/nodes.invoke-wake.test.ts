@@ -1975,6 +1975,60 @@ describe("node.invoke APNs wake path", () => {
     expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
   });
 
+  it("does not queue a success fallback when notifyOnExit is disabled in config", async () => {
+    mocks.loadConfig.mockReturnValue({
+      tools: { exec: { notifyOnExit: false } },
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: true,
+        payloadJSON: JSON.stringify({ exitCode: 0, timedOut: false, stdout: "ok", stderr: "" }),
+      }),
+    };
+    const respond = vi.fn(() => {
+      throw new Error("request socket closed");
+    });
+
+    await expect(
+      nodeHandlers["node.invoke"]({
+        params: makeNodeInvokeParams({
+          command: "system.run",
+          params: {
+            command: ["echo", "hi"],
+            sessionKey: "main",
+            runId: "run-route-success-reply-failed-config-suppressed",
+            deliveryContext: {
+              channel: "telegram",
+              to: "-100123",
+              accountId: "primary",
+              threadId: 47,
+            },
+          },
+        }),
+        respond: respond as never,
+        context: {
+          nodeRegistry,
+          execApprovalManager: undefined,
+          logGateway: {
+            info: vi.fn(),
+            warn: vi.fn(),
+          },
+        } as never,
+        client: null,
+        req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+        isWebchatConnect: () => false,
+      }),
+    ).rejects.toThrow("request socket closed");
+
+    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+  });
+
   it("keeps cached delivery context when system.run invoke times out", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({

@@ -642,6 +642,41 @@ describe("node exec events", () => {
     expect(requestHeartbeatNowMock).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves pre-delivered dedupe when exec.started arrives after the fallback delivery", async () => {
+    const ctx = buildCtx();
+    markExecFinishedDelivered({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered-started-late",
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.started",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-started-late",
+        command: "echo done",
+      }),
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-started-late",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+      }),
+    });
+
+    expect(
+      enqueueSystemEventMock.mock.calls.filter(
+        ([text]) =>
+          text === "Exec finished (node=node-2 id=run-pre-delivered-started-late, code 0)\ndone",
+      ),
+    ).toHaveLength(0);
+  });
+
   it("canonicalizes exec session key before enqueue and wake", async () => {
     loadSessionEntryMock.mockReturnValueOnce({
       ...buildSessionLookup("node-node-2"),

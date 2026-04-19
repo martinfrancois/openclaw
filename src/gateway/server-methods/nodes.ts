@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { resolveAgentConfig } from "../../agents/agent-scope-config.js";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { sanitizeInboundSystemTags } from "../../auto-reply/reply/inbound-text.js";
 import { loadConfig } from "../../config/config.js";
 import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
@@ -492,6 +494,16 @@ function shouldKeepForwardedSystemRunDeliveryContextOnError(error: unknown): boo
   return haystacks.some(
     (value) => value === "TIMEOUT" || value.includes("QUEUED_UNTIL_FOREGROUND"),
   );
+}
+
+function resolveExecNotifyOnExitEnabled(sessionKey: string): boolean {
+  const cfg = loadConfig();
+  const globalExec = cfg.tools?.exec;
+  const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+  const agentExec = sessionAgentId
+    ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
+    : undefined;
+  return (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false;
 }
 
 async function resolveDirectNodePushConfig() {
@@ -1491,7 +1503,11 @@ export const nodeHandlers: GatewayRequestHandlers = {
           undefined,
         );
       } catch (error) {
-        if (routedSuccessRun && routeRegistration?.suppressNotifyOnExit !== true) {
+        if (
+          routedSuccessRun &&
+          routeRegistration?.suppressNotifyOnExit !== true &&
+          resolveExecNotifyOnExitEnabled(routedSuccessRun.sessionKey)
+        ) {
           const fallbackText = buildSystemRunSuccessFallbackText({
             nodeId,
             runId: routedSuccessRun.runId,

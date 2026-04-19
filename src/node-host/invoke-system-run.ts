@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { resolveAgentConfig } from "../agents/agent-scope-config.js";
+import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayClient } from "../gateway/client.js";
 import {
@@ -204,6 +206,21 @@ async function loadSystemRunConfig(opts: HandleSystemRunInvokeOptions): Promise<
   return loadConfig();
 }
 
+async function resolveExecNotifyOnExitEnabled(params: {
+  loadConfig?: () => OpenClawConfig;
+  sessionKey: string;
+}): Promise<boolean> {
+  const cfg = params.loadConfig
+    ? params.loadConfig()
+    : (await import("../config/config.js")).loadConfig();
+  const globalExec = cfg.tools?.exec;
+  const sessionAgentId = resolveSessionAgentId({ sessionKey: params.sessionKey, config: cfg });
+  const agentExec = sessionAgentId
+    ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
+    : undefined;
+  return (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false;
+}
+
 async function sendSystemRunDenied(
   opts: Pick<
     HandleSystemRunInvokeOptions,
@@ -235,7 +252,10 @@ async function sendSystemRunDenied(
 }
 
 async function sendSystemRunCompleted(
-  opts: Pick<HandleSystemRunInvokeOptions, "sendExecFinishedEvent" | "sendInvokeResult">,
+  opts: Pick<
+    HandleSystemRunInvokeOptions,
+    "sendExecFinishedEvent" | "sendInvokeResult" | "loadConfig"
+  >,
   execution: SystemRunExecutionContext,
   result: ExecFinishedResult,
   payloadJSON: string,
@@ -283,6 +303,14 @@ async function sendSystemRunCompleted(
       throw invokeResultError;
     }
     if (execFinishedError) {
+      throw invokeResultError;
+    }
+    if (
+      !(await resolveExecNotifyOnExitEnabled({
+        loadConfig: opts.loadConfig,
+        sessionKey: execution.sessionKey,
+      }))
+    ) {
       throw invokeResultError;
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);

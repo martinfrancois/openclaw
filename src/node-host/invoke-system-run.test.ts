@@ -18,6 +18,7 @@ import {
   getRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SystemRunApprovalPlan } from "../infra/exec-approvals.js";
 import {
   loadExecApprovals,
@@ -424,6 +425,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     skillBinsCurrent?: () => Promise<Array<{ name: string; resolvedPath: string }>>;
     isCmdExeInvocation?: HandleSystemRunInvokeOptions["isCmdExeInvocation"];
     sanitizeEnv?: HandleSystemRunInvokeOptions["sanitizeEnv"];
+    loadConfig?: () => OpenClawConfig;
   }): Promise<{
     runCommand: MockedRunCommand;
     runViaMacAppExecHost: MockedRunViaMacAppExecHost;
@@ -493,7 +495,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       sendInvokeResult,
       sendExecFinishedEvent,
       preferMacAppExecHost: params.preferMacAppExecHost,
-      loadConfig: () => getRuntimeConfigSnapshot() ?? {},
+      loadConfig: params.loadConfig ?? (() => getRuntimeConfigSnapshot() ?? {}),
     });
 
     return {
@@ -672,6 +674,33 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     ).rejects.toThrow("request socket closed");
 
     expect(sendExecFinishedEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not tag invoke delivery failures as fallback-safe when notifyOnExit is disabled in config", async () => {
+    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
+      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
+    >(async () => undefined);
+
+    await expect(
+      runSystemInvoke({
+        preferMacAppExecHost: false,
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+        sendExecFinishedEvent,
+        loadConfig: () =>
+          ({
+            tools: { exec: { notifyOnExit: false } },
+          }) as OpenClawConfig,
+      }),
+    ).rejects.toThrow("request socket closed");
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 
   it("uses mac app exec host when explicitly preferred", async () => {

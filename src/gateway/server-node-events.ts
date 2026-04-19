@@ -10,6 +10,7 @@ import {
 import {
   classifyDuplicateExecFinished,
   clearRecentExecFinishedForRun,
+  hasPreDeliveredExecFinishedForRun,
   resetExecFinishedDeduplicationForTests,
 } from "./node-exec-finished-dedupe.js";
 import type { NodeEvent, NodeEventContext } from "./server-node-events-types.js";
@@ -651,7 +652,7 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
 
       let text = "";
       if (evt.event === "exec.started") {
-        if (runId) {
+        if (runId && !hasPreDeliveredExecFinishedForRun({ nodeId, sessionKey, runId })) {
           clearRecentExecFinishedForRun(nodeId, sessionKey, runId);
         }
         return;

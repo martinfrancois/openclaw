@@ -247,6 +247,24 @@ async function sendSystemRunCompleted(
     result,
     suppressNotifyOnExit: execution.suppressNotifyOnExit,
   } as const;
+  const shouldEmitDeferredSuccess =
+    !execution.suppressNotifyOnExit && execution.deliveryContext !== undefined;
+  let execFinishedError: unknown = null;
+  if (shouldEmitDeferredSuccess) {
+    try {
+      await opts.sendExecFinishedEvent({
+        ...execFinishedEvent,
+        deliveryContext: execution.deliveryContext,
+      });
+    } catch (error) {
+      execFinishedError = error;
+      logWarn(
+        `system.run exec.finished delivery failed (runId=${execution.runId}): ${String(
+          error instanceof Error ? error.message : error,
+        )}`,
+      );
+    }
+  }
   let invokeResultError: unknown = null;
   try {
     await opts.sendInvokeResult({
@@ -265,17 +283,7 @@ async function sendSystemRunCompleted(
     if (execution.suppressNotifyOnExit) {
       throw invokeResultError;
     }
-    try {
-      await opts.sendExecFinishedEvent({
-        ...execFinishedEvent,
-        deliveryContext: execution.deliveryContext,
-      });
-    } catch (error) {
-      logWarn(
-        `system.run exec.finished delivery failed (runId=${execution.runId}): ${String(
-          error instanceof Error ? error.message : error,
-        )}`,
-      );
+    if (execFinishedError) {
       throw invokeResultError;
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);

@@ -528,8 +528,8 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 
-  it("does not emit deferred deliveryContext after a successful invoke reply", async () => {
-    const { sendExecFinishedEvent } = await runSystemInvoke({
+  it("emits deferred exec.finished before a successful invoke reply when notifyOnExit is enabled", async () => {
+    const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
       preferMacAppExecHost: false,
       deliveryContext: {
         channel: "telegram",
@@ -538,7 +538,19 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       },
     });
 
-    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+    expect(sendExecFinishedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+      }),
+    );
+    expect(sendExecFinishedEvent.mock.invocationCallOrder[0]).toBeLessThan(
+      sendInvokeResult.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it("propagates invoke result delivery failures instead of hanging until timeout", async () => {

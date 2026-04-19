@@ -1477,6 +1477,10 @@ export async function runHeartbeatOnce(opts: {
     const canRouteExplicitExecReplyToSharedContext =
       !replyLookedLikeHeartbeatOk &&
       normalized.text.trim().length > 0 &&
+      hasOnlySharedRoutedEventsForExecFallback(
+        preflight.pendingEventEntries,
+        sharedExecCompletionDeliveryContext,
+      ) &&
       hasOnlySharedRoutedExecCompletionsForExplicitExecReply(
         preflight.pendingEventEntries,
         sharedExecCompletionDeliveryContext,

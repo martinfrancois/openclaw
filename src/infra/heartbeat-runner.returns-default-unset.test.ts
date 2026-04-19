@@ -2135,7 +2135,7 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
-  it("ignores unrelated reminder routes when relaying routed async node exec completions", async () => {
+  it("keeps mixed-route reminder batches internal for routed async node exec completions", async () => {
     const tmpDir = await createCaseDir("hb-exec-target-none-routed-node-with-reminder");
     const storePath = path.join(tmpDir, "sessions.json");
     const cfg: OpenClawConfig = {
@@ -2192,9 +2192,7 @@ describe("runHeartbeatOnce", () => {
         deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
       });
       expect(res.status).toBe("ran");
-      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
-      expect(sendWhatsApp.mock.calls[0]?.[0]).toBe("120363401234567890@g.us");
-      expect(sendWhatsApp.mock.calls[0]?.[1]).toBe("Handled follow-up");
+      expect(sendWhatsApp).not.toHaveBeenCalled();
     } finally {
       replySpy.mockReset();
     }

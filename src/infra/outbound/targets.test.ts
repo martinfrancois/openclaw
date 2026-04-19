@@ -801,6 +801,31 @@ describe("resolveSessionDeliveryTarget", () => {
     expect(resolved.accountId).toBe("newer-bot");
   });
 
+  it("preserves Telegram topic routing when async exec fallback only has an encoded topic target", () => {
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      entry: {
+        sessionId: "sess-heartbeat-exec-fallback-encoded-topic-only",
+        updatedAt: 1,
+        lastChannel: "telegram",
+        lastTo: "-1001234567890",
+        chatType: "group",
+      },
+      heartbeat: {
+        target: "none",
+      },
+      allowAsyncWakeFallbackToLast: true,
+      turnSource: {
+        channel: "telegram",
+        to: "telegram:-1001234567890:topic:42",
+      },
+    });
+
+    expect(resolved.channel).toBe("telegram");
+    expect(resolved.to).toBe("-1001234567890");
+    expect(resolved.threadId).toBe(42);
+  });
+
   it("keeps directPolicy blocking when async exec fallback ignores a stale heartbeat.to", () => {
     const resolved = resolveHeartbeatDeliveryTarget({
       cfg: {},

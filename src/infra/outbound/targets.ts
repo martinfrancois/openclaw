@@ -182,7 +182,9 @@ export function resolveHeartbeatDeliveryTarget(params: {
     // heartbeat mode intentionally drops inherited thread IDs to avoid replying
     // in stale threads (e.g., Slack thread_ts). The sentinel's delivery context
     // carries the correct topic/thread ID when present.
-    turnSourceThreadId: params.turnSource?.threadId,
+    turnSourceThreadId: useAsyncWakeFallbackToLast
+      ? resolvedTurnSource?.threadId
+      : params.turnSource?.threadId,
   });
 
   const heartbeatAccountId = useAsyncWakeFallbackToLast ? undefined : heartbeat?.accountId?.trim();

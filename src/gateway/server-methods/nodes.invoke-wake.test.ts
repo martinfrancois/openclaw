@@ -1453,7 +1453,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("marks routed system.run completions before replying to the caller", async () => {
+  it("marks routed system.run completions after replying to the caller", async () => {
     expect(
       classifyDuplicateExecFinished({
         nodeId: "ios-node-1",
@@ -1473,16 +1473,7 @@ describe("node.invoke APNs wake path", () => {
         payloadJSON: JSON.stringify({ exitCode: 0, timedOut: false, stdout: "ok", stderr: "" }),
       }),
     };
-    const respond = vi.fn((_ok: boolean) => {
-      expect(
-        classifyDuplicateExecFinished({
-          nodeId: "ios-node-1",
-          sessionKey: "agent:main:main",
-          runId: "run-route-success",
-          now: Date.now(),
-        }),
-      ).toBe("pre-delivered");
-    });
+    const respond = vi.fn();
 
     await nodeHandlers["node.invoke"]({
       params: makeNodeInvokeParams({
@@ -1513,7 +1504,15 @@ describe("node.invoke APNs wake path", () => {
       isWebchatConnect: () => false,
     });
 
-    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalled();
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-success",
+        now: Date.now(),
+      }),
+    ).toBe("pre-delivered");
   });
 
   it("queues a routed success fallback when replying with a routed success throws", async () => {
@@ -1565,7 +1564,7 @@ describe("node.invoke APNs wake path", () => {
       isWebchatConnect: () => false,
     });
 
-    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalled();
     expect(runtimeMocks.enqueueSystemEvent).toHaveBeenCalledWith(
       "Exec finished (node=ios-node-1 id=run-route-success-reply-failed, code 0)\nok",
       {
@@ -1584,6 +1583,76 @@ describe("node.invoke APNs wake path", () => {
       sessionKey: "agent:main:main",
       reason: "exec-event",
     });
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-success-reply-failed",
+        now: Date.now(),
+      }),
+    ).toBe("pre-delivered");
+  });
+
+  it("does not mark routed success as pre-delivered when the queued fallback cannot be recorded", async () => {
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: true,
+        payloadJSON: JSON.stringify({ exitCode: 0, timedOut: false, stdout: "ok", stderr: "" }),
+      }),
+    };
+    runtimeMocks.enqueueSystemEvent.mockReturnValue(false);
+    let firstReply = true;
+    const respond = vi.fn((ok: boolean) => {
+      if (ok && firstReply) {
+        firstReply = false;
+        throw new Error("request socket closed");
+      }
+    });
+
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-success-reply-failed-no-fallback",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
+          },
+        },
+      }),
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
+
+    expect(respond).toHaveBeenCalled();
+    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-success-reply-failed-no-fallback",
+        now: Date.now(),
+      }),
+    ).toBe("enqueue");
   });
 
   it("queues a quiet success fallback when replying without a trusted route throws", async () => {

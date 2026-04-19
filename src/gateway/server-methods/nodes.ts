@@ -1496,13 +1496,6 @@ export const nodeHandlers: GatewayRequestHandlers = {
               runId: routeRegistration.runId,
             }
           : null;
-      if (routedSuccessRun) {
-        markExecFinishedDelivered({
-          nodeId,
-          sessionKey: routedSuccessRun.sessionKey,
-          runId: routedSuccessRun.runId,
-        });
-      }
       const payload = res.payloadJSON ? safeParseJson(res.payloadJSON) : res.payload;
       try {
         respond(
@@ -1516,6 +1509,13 @@ export const nodeHandlers: GatewayRequestHandlers = {
           },
           undefined,
         );
+        if (routedSuccessRun) {
+          markExecFinishedDelivered({
+            nodeId,
+            sessionKey: routedSuccessRun.sessionKey,
+            runId: routedSuccessRun.runId,
+          });
+        }
         if (routeRegistration?.deliveryContext && !keepRoutedSuccessDeliveryContext) {
           forgetNodeExecDeliveryContext(routeRegistration);
         }
@@ -1535,11 +1535,17 @@ export const nodeHandlers: GatewayRequestHandlers = {
             deliveryContext: routeRegistration?.deliveryContext,
             trusted: false,
           });
-          if (queued) {
-            requestHeartbeatNow(
-              scopedHeartbeatWakeOptions(routedSuccessRun.sessionKey, { reason: "exec-event" }),
-            );
+          if (!queued) {
+            throw error;
           }
+          markExecFinishedDelivered({
+            nodeId,
+            sessionKey: routedSuccessRun.sessionKey,
+            runId: routedSuccessRun.runId,
+          });
+          requestHeartbeatNow(
+            scopedHeartbeatWakeOptions(routedSuccessRun.sessionKey, { reason: "exec-event" }),
+          );
           if (routeRegistration && !keepRoutedSuccessDeliveryContext) {
             forgetNodeExecDeliveryContext(routeRegistration);
           }

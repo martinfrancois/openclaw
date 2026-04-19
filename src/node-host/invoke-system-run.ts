@@ -277,21 +277,6 @@ async function sendSystemRunCompleted(
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
   }
-  void opts
-    .sendExecFinishedEvent({
-      ...execFinishedEvent,
-      // A successful invoke reply is already terminal for the caller. Only keep the
-      // delivery route on the deferred exec.finished event when the invoke reply
-      // itself could not be delivered, so later completion can still surface.
-      deliveryContext: undefined,
-    })
-    .catch((error) => {
-      logWarn(
-        `system.run exec.finished delivery failed (runId=${execution.runId}): ${String(
-          error instanceof Error ? error.message : error,
-        )}`,
-      );
-    });
 }
 
 export { formatSystemRunAllowlistMissMessage } from "./exec-policy.js";

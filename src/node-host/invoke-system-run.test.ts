@@ -513,27 +513,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 
-  it("returns the invoke result before waiting on exec.finished delivery for local execution", async () => {
-    let resolveExecFinishedEvent: (() => void) | undefined;
-    const execFinishedEventPending = new Promise<void>((resolve) => {
-      resolveExecFinishedEvent = resolve;
-    });
-    const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
-      preferMacAppExecHost: false,
-      sendExecFinishedEvent: async () => {
-        await execFinishedEventPending;
-      },
-    });
-
-    expect(sendInvokeResult).toHaveBeenCalledTimes(1);
-    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
-    expect(sendInvokeResult.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
-      sendExecFinishedEvent.mock.invocationCallOrder[0] ?? 0,
-    );
-    resolveExecFinishedEvent?.();
-  });
-
-  it("still returns the invoke result when exec.finished delivery fails", async () => {
+  it("does not emit exec.finished after a successful local invoke reply", async () => {
     const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
       preferMacAppExecHost: false,
       sendExecFinishedEvent: async () => {
@@ -541,12 +521,12 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       },
     });
 
-    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
     expect(sendInvokeResult).toHaveBeenCalledTimes(1);
+    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 
-  it("drops deferred deliveryContext after a successful invoke reply", async () => {
+  it("does not emit deferred deliveryContext after a successful invoke reply", async () => {
     const { sendExecFinishedEvent } = await runSystemInvoke({
       preferMacAppExecHost: false,
       deliveryContext: {
@@ -556,11 +536,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       },
     });
 
-    expect(sendExecFinishedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deliveryContext: undefined,
-      }),
-    );
+    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
   });
 
   it("propagates invoke result delivery failures instead of hanging until timeout", async () => {

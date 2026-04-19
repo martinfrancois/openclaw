@@ -27,6 +27,7 @@ import {
   loadSessionEntry,
   migrateAndPruneGatewaySessionStoreKey,
   normalizeChannelId,
+  resolveAgentConfig,
   normalizeMainKey,
   normalizeRpcAttachmentsToChatAttachments,
   parseMessageWithAttachments,
@@ -137,6 +138,25 @@ function compactExecEventOutput(raw: string) {
   }
   const safe = Math.max(1, MAX_EXEC_EVENT_OUTPUT_CHARS - 1);
   return `${normalized.slice(0, safe)}…`;
+}
+
+function resolveExecNotifySettings(params: { config: OpenClawConfig; sessionKey: string }): {
+  notifyOnExit: boolean;
+  notifyOnExitEmptySuccess: boolean;
+} {
+  const globalExec = params.config.tools?.exec;
+  const sessionAgentId = resolveSessionAgentId({
+    sessionKey: params.sessionKey,
+    config: params.config,
+  });
+  const agentExec = sessionAgentId
+    ? resolveAgentConfig(params.config, sessionAgentId)?.tools?.exec
+    : undefined;
+  return {
+    notifyOnExit: (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false,
+    notifyOnExitEmptySuccess:
+      (agentExec?.notifyOnExitEmptySuccess ?? globalExec?.notifyOnExitEmptySuccess) === true,
+  };
 }
 
 function compactNotificationEventText(raw: string) {
@@ -595,10 +615,11 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
       }
       const { canonicalKey: sessionKey } = loadSessionEntry(sessionKeyRaw);
 
-      // Respect tools.exec.notifyOnExit setting (default: true)
-      // When false, skip system event notifications for node exec events.
       const cfg = loadConfig();
-      const notifyOnExit = cfg.tools?.exec?.notifyOnExit !== false;
+      const { notifyOnExit, notifyOnExitEmptySuccess } = resolveExecNotifySettings({
+        config: cfg,
+        sessionKey,
+      });
       const runId = normalizeOptionalString(obj.runId) ?? "";
       if (
         evt.event !== "exec.started" &&
@@ -643,7 +664,12 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
         });
         const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
         const compactOutput = compactExecEventOutput(output);
-        const shouldNotify = timedOut || exitCode !== 0 || compactOutput.length > 0;
+        const successfulExit = obj.success === true || (!timedOut && exitCode === 0);
+        const shouldNotify =
+          timedOut ||
+          exitCode !== 0 ||
+          compactOutput.length > 0 ||
+          (notifyOnExitEmptySuccess && successfulExit);
         if (!shouldNotify) {
           if (runId) {
             resolveNodeExecDeliveryContext({

@@ -67,6 +67,7 @@ const sanitizeInboundSystemTagsMock = vi.hoisted(() =>
       .replace(/^(\s*)System:(?=\s|$)/gim, "$1System (untrusted):"),
   ),
 );
+const resolveAgentConfigMock = vi.hoisted(() => vi.fn());
 
 const runtimeMocks = vi.hoisted(() => ({
   agentCommandFromIngress: ingressAgentCommandMock,
@@ -96,6 +97,7 @@ const runtimeMocks = vi.hoisted(() => ({
   parseMessageWithAttachments: parseMessageWithAttachmentsMock,
   registerApnsRegistration: registerApnsRegistrationMock,
   requestHeartbeatNow: vi.fn(),
+  resolveAgentConfig: resolveAgentConfigMock,
   resolveGatewayModelSupportsImages: vi.fn(
     async ({
       loadGatewayModelCatalog,
@@ -151,6 +153,7 @@ const updateSessionStoreMock = runtimeMocks.updateSessionStore;
 const loadSessionEntryMock = runtimeMocks.loadSessionEntry;
 const registerApnsRegistrationVi = runtimeMocks.registerApnsRegistration;
 const normalizeChannelIdVi = runtimeMocks.normalizeChannelId;
+const resolveSessionAgentIdVi = runtimeMocks.resolveSessionAgentId;
 
 function buildCtx(): NodeEventContext {
   return {
@@ -182,6 +185,8 @@ describe("node exec events", () => {
     enqueueSystemEventMock.mockClear();
     enqueueSystemEventMock.mockReturnValue(true);
     requestHeartbeatNowMock.mockClear();
+    resolveSessionAgentIdVi.mockClear();
+    resolveAgentConfigMock.mockReset();
     registerApnsRegistrationVi.mockClear();
     loadOrCreateDeviceIdentityMock.mockClear();
     normalizeChannelIdVi.mockClear();
@@ -857,6 +862,77 @@ describe("node exec events", () => {
 
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+  });
+
+  it("uses agent-level notifyOnExit when the global setting is disabled", async () => {
+    loadConfigMock.mockReturnValueOnce({
+      session: { mainKey: "agent:main:main" },
+      tools: { exec: { notifyOnExit: false } },
+    } as OpenClawConfig);
+    resolveSessionAgentIdVi.mockReturnValueOnce("ops");
+    resolveAgentConfigMock.mockReturnValueOnce({
+      tools: { exec: { notifyOnExit: true } },
+    });
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-agent-override", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:ops:main",
+        runId: "run-agent-override",
+        exitCode: 1,
+        timedOut: false,
+        output: "permission denied",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-agent-override id=run-agent-override, code 1)\npermission denied",
+      {
+        sessionKey: "agent:ops:main",
+        contextKey: "exec:run-agent-override",
+        trusted: false,
+      },
+    );
+    expect(requestHeartbeatNowMock).toHaveBeenCalledWith({
+      reason: "exec-event",
+      sessionKey: "agent:ops:main",
+    });
+  });
+
+  it("honors notifyOnExitEmptySuccess for quiet node exec completions", async () => {
+    loadConfigMock.mockReturnValueOnce({
+      session: { mainKey: "agent:main:main" },
+      tools: { exec: { notifyOnExit: true, notifyOnExitEmptySuccess: false } },
+    } as OpenClawConfig);
+    resolveSessionAgentIdVi.mockReturnValueOnce("ops");
+    resolveAgentConfigMock.mockReturnValueOnce({
+      tools: { exec: { notifyOnExitEmptySuccess: true } },
+    });
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-empty-success", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:ops:main",
+        runId: "run-empty-success",
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+        output: "   ",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-empty-success id=run-empty-success, code 0)",
+      {
+        sessionKey: "agent:ops:main",
+        contextKey: "exec:run-empty-success",
+        trusted: false,
+      },
+    );
+    expect(requestHeartbeatNowMock).toHaveBeenCalledWith({
+      reason: "exec-event",
+      sessionKey: "agent:ops:main",
+    });
   });
 
   it("sanitizes remote exec event content before enqueue", async () => {

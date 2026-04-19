@@ -1,4 +1,4 @@
-export { resolveSessionAgentId } from "../agents/agent-scope.js";
+export { resolveAgentConfig, resolveSessionAgentId } from "../agents/agent-scope.js";
 export { sanitizeInboundSystemTags } from "../auto-reply/reply/inbound-text.js";
 export { normalizeChannelId } from "../channels/plugins/index.js";
 export { createOutboundSendDeps } from "../cli/outbound-send-deps.js";

@@ -710,6 +710,42 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("does not tag quiet successful invoke delivery failures as fallback-safe by default", async () => {
+    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
+      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
+    >(async () => undefined);
+
+    let thrown: unknown;
+    try {
+      await runSystemInvoke({
+        preferMacAppExecHost: false,
+        command: ["true"],
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+        sendExecFinishedEvent,
+        runCommand: async () => ({
+          success: true,
+          timedOut: false,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          truncated: false,
+        }),
+        loadConfig: () =>
+          ({
+            tools: { exec: { notifyOnExit: true, notifyOnExitEmptySuccess: false } },
+          }) as OpenClawConfig,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(false);
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("honors agent-scoped notifyOnExit overrides for relative session keys", async () => {
     const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
       HandleSystemRunInvokeOptions["sendExecFinishedEvent"]

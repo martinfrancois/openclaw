@@ -212,7 +212,7 @@ async function resolveExecNotifyOnExitEnabled(params: {
   agentId?: string;
   loadConfig?: () => OpenClawConfig;
   sessionKey: string;
-}): Promise<boolean> {
+}): Promise<{ notifyOnExit: boolean; notifyOnExitEmptySuccess: boolean }> {
   const cfg = params.loadConfig
     ? params.loadConfig()
     : (await import("../config/config.js")).loadConfig();
@@ -225,7 +225,30 @@ async function resolveExecNotifyOnExitEnabled(params: {
   const agentExec = sessionAgentId
     ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
     : undefined;
-  return (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false;
+  return {
+    notifyOnExit: (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false,
+    notifyOnExitEmptySuccess:
+      (agentExec?.notifyOnExitEmptySuccess ?? globalExec?.notifyOnExitEmptySuccess) === true,
+  };
+}
+
+function shouldEmitExecFinishedFollowUp(
+  result: ExecFinishedResult,
+  notifyOnExitEmptySuccess: boolean,
+): boolean {
+  const output = [result.stdout, result.stderr, result.error]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n")
+    .trim();
+  const timedOut = result.timedOut === true;
+  const exitCode =
+    typeof result.exitCode === "number" && Number.isFinite(result.exitCode)
+      ? result.exitCode
+      : undefined;
+  const successfulExit = result.success === true || (!timedOut && exitCode === 0);
+  return (
+    timedOut || exitCode !== 0 || output.length > 0 || (notifyOnExitEmptySuccess && successfulExit)
+  );
 }
 
 async function sendSystemRunDenied(
@@ -312,12 +335,14 @@ async function sendSystemRunCompleted(
     if (execFinishedError) {
       throw invokeResultError;
     }
+    const notifySettings = await resolveExecNotifyOnExitEnabled({
+      agentId: execution.agentId,
+      loadConfig: opts.loadConfig,
+      sessionKey: execution.sessionKey,
+    });
     if (
-      !(await resolveExecNotifyOnExitEnabled({
-        agentId: execution.agentId,
-        loadConfig: opts.loadConfig,
-        sessionKey: execution.sessionKey,
-      }))
+      !notifySettings.notifyOnExit ||
+      !shouldEmitExecFinishedFollowUp(result, notifySettings.notifyOnExitEmptySuccess)
     ) {
       throw invokeResultError;
     }

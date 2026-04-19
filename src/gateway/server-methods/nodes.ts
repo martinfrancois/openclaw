@@ -357,10 +357,11 @@ function restoreForwardedSystemRunDeliveryContext(params: {
 
 function buildSystemRunSuccessFallbackText(params: {
   nodeId: string;
+  notifyOnExitEmptySuccess: boolean;
   runId: string;
   payload?: unknown;
   payloadJSON?: string | null;
-}): string {
+}): string | null {
   const compactExecEventOutput = (raw: string): string => {
     const normalized = raw.replace(/\s+/g, " ").trim();
     if (!normalized) {
@@ -394,6 +395,10 @@ function buildSystemRunSuccessFallbackText(params: {
       .map((value) => sanitizeInboundSystemTags(value))
       .join("\n"),
   );
+  const successfulExit = !timedOut && exitCode === 0;
+  if (!output && successfulExit && !params.notifyOnExitEmptySuccess) {
+    return null;
+  }
   const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;
   return output.trim()
     ? `Exec finished (node=${params.nodeId} id=${params.runId}, ${exitLabel})\n${output.trim()}`
@@ -497,14 +502,21 @@ function shouldKeepForwardedSystemRunDeliveryContextOnError(error: unknown): boo
   );
 }
 
-function resolveExecNotifyOnExitEnabled(sessionKey: string): boolean {
+function resolveExecNotifySettings(sessionKey: string): {
+  notifyOnExit: boolean;
+  notifyOnExitEmptySuccess: boolean;
+} {
   const cfg = loadConfig();
   const globalExec = cfg.tools?.exec;
   const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
   const agentExec = sessionAgentId
     ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
     : undefined;
-  return (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false;
+  return {
+    notifyOnExit: (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false,
+    notifyOnExitEmptySuccess:
+      (agentExec?.notifyOnExitEmptySuccess ?? globalExec?.notifyOnExitEmptySuccess) === true,
+  };
 }
 
 async function resolveDirectNodePushConfig() {
@@ -1510,11 +1522,11 @@ export const nodeHandlers: GatewayRequestHandlers = {
           undefined,
         );
       } catch (error) {
-        if (
-          routedSuccessRun &&
-          routeRegistration?.suppressNotifyOnExit !== true &&
-          resolveExecNotifyOnExitEnabled(routedSuccessRun.sessionKey)
-        ) {
+        if (routedSuccessRun && routeRegistration?.suppressNotifyOnExit !== true) {
+          const notifySettings = resolveExecNotifySettings(routedSuccessRun.sessionKey);
+          if (!notifySettings.notifyOnExit) {
+            throw error;
+          }
           if (
             hasRecentExecFinishedForRun({
               nodeId,
@@ -1529,10 +1541,14 @@ export const nodeHandlers: GatewayRequestHandlers = {
           }
           const fallbackText = buildSystemRunSuccessFallbackText({
             nodeId,
+            notifyOnExitEmptySuccess: notifySettings.notifyOnExitEmptySuccess,
             runId: routedSuccessRun.runId,
             payload: res.payload,
             payloadJSON: res.payloadJSON ?? null,
           });
+          if (!fallbackText) {
+            throw error;
+          }
           const { enqueueSystemEvent, requestHeartbeatNow, scopedHeartbeatWakeOptions } =
             await import("../server-node-events.runtime.js");
           const queued = enqueueSystemEvent(fallbackText, {

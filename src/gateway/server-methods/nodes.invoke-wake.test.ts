@@ -1705,15 +1705,21 @@ describe("node.invoke APNs wake path", () => {
       isWebchatConnect: () => false,
     });
 
-    const queuedText = runtimeMocks.enqueueSystemEvent.mock.calls.at(-1)?.[0];
+    const queuedCall = runtimeMocks.enqueueSystemEvent.mock.calls.at(-1) as
+      | [unknown, ...unknown[]]
+      | undefined;
+    const queuedText = queuedCall?.[0];
     expect(typeof queuedText).toBe("string");
+    if (typeof queuedText !== "string") {
+      throw new Error("expected queued exec fallback text");
+    }
     expect(queuedText).toContain(
       "Exec finished (node=ios-node-1 id=run-route-success-reply-failed-compact, code 0)",
     );
     expect(queuedText).toContain("(System)");
     expect(queuedText).not.toContain("[System]");
-    expect(queuedText?.length ?? 0).toBeLessThanOrEqual(280);
-    expect(queuedText?.endsWith("…")).toBe(true);
+    expect(queuedText.length).toBeLessThanOrEqual(280);
+    expect(queuedText.endsWith("…")).toBe(true);
   });
 
   it("does not queue a success fallback when notify-on-exit is suppressed", async () => {

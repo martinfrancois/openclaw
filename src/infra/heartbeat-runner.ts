@@ -1112,15 +1112,6 @@ export async function runHeartbeatOnce(opts: {
       preflight.pendingEventEntries,
       sharedExecCompletionDeliveryContext,
     );
-  const deliveryHeartbeat =
-    canFallbackExecToLast && heartbeat
-      ? {
-          ...heartbeat,
-          target: "last" as const,
-          to: undefined,
-          accountId: undefined,
-        }
-      : heartbeat;
 
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
@@ -1131,12 +1122,12 @@ export async function runHeartbeatOnce(opts: {
   const delivery = resolveHeartbeatDeliveryTarget({
     cfg,
     entry,
-    heartbeat: deliveryHeartbeat,
-    // Async exec completions should be able to relay back to the last user even
-    // when normal heartbeat delivery is pinned elsewhere, but only when every
-    // pending exec event in this run resolves to the same delivery context.
-    // Mixed-route batches fall back to the configured heartbeat target to avoid
-    // cross-user leakage.
+    // Async exec completions should be able to relay back to the last user when
+    // normal heartbeat delivery is internal-only (`target: "none"`), but only
+    // when every pending exec event in this run resolves to the same delivery
+    // context. Mixed-route batches fall back to the configured heartbeat target
+    // to avoid cross-user leakage.
+    heartbeat,
     allowAsyncWakeFallbackToLast: canFallbackExecToLast,
     // Isolated heartbeat runs usually ignore base-session turnSource routing so
     // stale queued context cannot pin later scheduled runs to the wrong thread.
@@ -1170,6 +1161,7 @@ export async function runHeartbeatOnce(opts: {
   const promptDelivery =
     canFallbackExecToLast &&
     delivery.channel === "none" &&
+    delivery.reason === "target-none" &&
     sharedExecCompletionDeliveryContext?.channel &&
     sharedExecCompletionDeliveryContext.to
       ? {
@@ -1495,7 +1487,8 @@ export async function runHeartbeatOnce(opts: {
     const outboundDelivery =
       hasExecCompletion &&
       delivery.channel === "none" &&
-      delivery.reason !== "dm-blocked" &&
+      // Only reuse the shared exec route for the target=none fallback path.
+      delivery.reason === "target-none" &&
       sharedExecCompletionDeliveryContext?.channel &&
       sharedExecCompletionDeliveryContext.to &&
       (canRouteExplicitExecReplyToSharedContext ||

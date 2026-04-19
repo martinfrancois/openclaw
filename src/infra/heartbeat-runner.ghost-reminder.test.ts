@@ -1406,7 +1406,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
     });
   });
 
-  it("keeps exec-event delivery pinned to the event route when heartbeat is pinned elsewhere", async () => {
+  it("keeps the explicit heartbeat target when exec-event delivery differs", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
       const cfg: OpenClawConfig = {
         agents: {
@@ -1464,7 +1464,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
 
       expect(result.status).toBe("ran");
       expect(sendTelegram).toHaveBeenCalledTimes(1);
-      expect(sendTelegram.mock.calls[0]?.[0]).toBe("-100155462274");
+      expect(sendTelegram.mock.calls[0]?.[0]).toBe("-1009999999999");
       expect(sendTelegram.mock.calls[0]?.[1]).toBe("Handled follow-up");
     });
   });

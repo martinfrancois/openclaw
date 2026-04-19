@@ -635,6 +635,31 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     await expect(invokePromise).rejects.toThrow("request socket closed");
   });
 
+  it("rethrows invoke result failures when deferred exec.finished delivery also fails", async () => {
+    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
+      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
+    >(async () => {
+      throw new Error("node.event failed");
+    });
+
+    await expect(
+      runSystemInvoke({
+        preferMacAppExecHost: false,
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+        sendExecFinishedEvent,
+      }),
+    ).rejects.toThrow("request socket closed");
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("uses mac app exec host when explicitly preferred", async () => {
     const { runCommand, runViaMacAppExecHost, sendInvokeResult } = await runSystemInvoke({
       preferMacAppExecHost: true,

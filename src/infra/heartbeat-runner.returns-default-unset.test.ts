@@ -2315,4 +2315,73 @@ describe("runHeartbeatOnce", () => {
       replySpy.mockReset();
     }
   });
+
+  it("keeps unknown-account exec routing failures internal instead of rerouting to the last route", async () => {
+    const tmpDir = await createCaseDir("hb-exec-unknown-account-stays-internal");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: tmpDir,
+          heartbeat: {
+            every: "5m",
+            target: "telegram",
+            to: "-100123",
+            accountId: "missing",
+          },
+        },
+      },
+      channels: {
+        telegram: {
+          accounts: {
+            work: { botToken: "token" },
+          },
+        },
+        whatsapp: {
+          allowFrom: ["*"],
+        },
+      },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId: "sid",
+          updatedAt: Date.now(),
+          lastChannel: "whatsapp",
+          lastTo: "120363401234567890@g.us",
+        },
+      }),
+    );
+    enqueueSystemEvent("Exec finished (node=node-1 id=approval-missing-account, code 0)\nok", {
+      sessionKey,
+      contextKey: "exec:approval-missing-account",
+      deliveryContext: {
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      },
+    });
+
+    const replySpy = vi.fn();
+    replySpy.mockResolvedValue({ text: "Handled follow-up" });
+    const sendWhatsApp = vi
+      .fn<
+        (to: string, text: string, opts?: unknown) => Promise<{ messageId: string; toJid: string }>
+      >()
+      .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    try {
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "exec-event",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(res.status).toBe("ran");
+      expect(sendWhatsApp).not.toHaveBeenCalled();
+    } finally {
+      replySpy.mockReset();
+    }
+  });
 });

@@ -273,6 +273,7 @@ async function sendSystemRunCompleted(
           error instanceof Error ? error.message : error,
         )}`,
       );
+      throw invokeResultError;
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
   }

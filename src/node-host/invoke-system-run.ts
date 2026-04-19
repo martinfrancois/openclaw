@@ -454,7 +454,11 @@ async function parseSystemRunPhase(
     return null;
   }
   const agentId = normalizeOptionalString(opts.params.agentId);
-  const sessionKey = normalizeOptionalString(opts.params.sessionKey) ?? "node";
+  const rawSessionKey = normalizeOptionalString(opts.params.sessionKey);
+  const sessionKey =
+    rawSessionKey && agentId && !rawSessionKey.toLowerCase().startsWith("agent:")
+      ? canonicalizeSessionKeyForAgent(normalizeAgentId(agentId), rawSessionKey)
+      : (rawSessionKey ?? "node");
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const deliveryContext =
     normalizeDeliveryContext(opts.params.deliveryContext ?? undefined) ?? undefined;

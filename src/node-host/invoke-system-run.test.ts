@@ -793,6 +793,25 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("canonicalizes relative session keys with agentId before emitting deferred exec events", async () => {
+    const { sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      agentId: "ops",
+      sessionKey: "main",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:ops:main",
+      }),
+    );
+  });
+
   it("uses mac app exec host when explicitly preferred", async () => {
     const { runCommand, runViaMacAppExecHost, sendInvokeResult } = await runSystemInvoke({
       preferMacAppExecHost: true,

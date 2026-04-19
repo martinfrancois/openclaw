@@ -2029,6 +2029,61 @@ describe("node.invoke APNs wake path", () => {
     expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
   });
 
+  it("skips synthetic success fallback when exec.finished already queued", async () => {
+    classifyDuplicateExecFinished({
+      nodeId: "ios-node-1",
+      sessionKey: "agent:main:main",
+      runId: "run-route-success-reply-failed-real-event-first",
+      now: Date.now(),
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: true,
+        payloadJSON: JSON.stringify({ exitCode: 0, timedOut: false, stdout: "ok", stderr: "" }),
+      }),
+    };
+    const respond = vi.fn(() => {
+      throw new Error("request socket closed");
+    });
+
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-success-reply-failed-real-event-first",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
+          },
+        },
+      }),
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
+
+    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+  });
+
   it("keeps cached delivery context when system.run invoke times out", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
@@ -2183,6 +2238,57 @@ describe("node.invoke APNs wake path", () => {
       accountId: "trusted-account",
       threadId: "99",
     });
+  });
+
+  it("does not cache delivery context before a synchronous system.run success", async () => {
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockImplementation(async () => {
+        expect(
+          resolveNodeExecDeliveryContext({
+            nodeId: "ios-node-1",
+            sessionKey: "agent:main:main",
+            runId: "run-route-sync-success",
+          }),
+        ).toBeUndefined();
+        return {
+          ok: true,
+          payload: { success: true, exitCode: 0 },
+        };
+      }),
+    };
+
+    const respond = await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-sync-success",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100999",
+            accountId: "primary",
+            threadId: 88,
+          },
+        },
+      },
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        nodeId: "ios-node-1",
+        command: "system.run",
+      }),
+      undefined,
+    );
   });
 
   it("clears cached delivery context when a reused run id later succeeds", async () => {

@@ -511,7 +511,7 @@ export async function executeNodeHostCommand(
             "node.invoke",
             { timeoutMs: invokeTimeoutMs },
             buildInvokeParams(approvedByAsk, approvalDecision, approvalId, {
-              suppressNotifyOnExit: !notifyOnExit,
+              suppressNotifyOnExit: true,
             }),
           );
           await execHostShared.sendExecApprovalFollowupResult(
@@ -523,24 +523,16 @@ export async function executeNodeHostCommand(
             }),
           );
         } catch (error) {
-          // Gateway-side system.run timeouts keep the deferred delivery route alive so
-          // the later exec.finished/exec.denied event can report the real outcome.
+          // Approval followups are authoritative for this path, so pending dispatch
+          // failures stop here instead of waiting for a later heartbeat completion.
           const pendingGatewayTimeout = isPendingNodeInvokeTimeout(error);
           const pendingQueuedInvoke = isPendingQueuedNodeInvoke(error);
           if (pendingGatewayTimeout || pendingQueuedInvoke) {
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
               pendingQueuedInvoke
-                ? `Exec pending (node=${nodeId} id=${approvalId}, invoke-unconfirmed): ${params.command}\n${
-                    notifyOnExit
-                      ? "The gateway queued the run until the node returns to the foreground. A later completion message may still arrive."
-                      : "The gateway queued the run until the node returns to the foreground. Exec notifyOnExit is disabled, so no automatic completion follow-up will be sent."
-                  }`
-                : `Exec pending (node=${nodeId} id=${approvalId}, gateway-timeout): ${params.command}\n${
-                    notifyOnExit
-                      ? "The gateway timed out before confirming dispatch. If the run was accepted, a later completion message may still arrive."
-                      : "The gateway timed out before confirming dispatch. Exec notifyOnExit is disabled, so no automatic completion follow-up will be sent."
-                  }`,
+                ? `Exec pending (node=${nodeId} id=${approvalId}, invoke-unconfirmed): ${params.command}\nThe gateway queued the run until the node returns to the foreground. No automatic completion follow-up will be sent for this approval flow.`
+                : `Exec pending (node=${nodeId} id=${approvalId}, gateway-timeout): ${params.command}\nThe gateway timed out before confirming dispatch. No automatic completion follow-up will be sent for this approval flow.`,
             );
             return;
           }

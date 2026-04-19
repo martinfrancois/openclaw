@@ -75,7 +75,19 @@ export function hasPreDeliveredExecFinishedForRun(params: {
   sessionKey: string;
   runId: string;
 }): boolean {
-  return recentExecFinishedRuns.get(execFinishedFingerprint(params))?.preDelivered === true;
+  const entry = recentExecFinishedRuns.get(execFinishedFingerprint(params));
+  return Boolean(
+    entry && Date.now() - entry.ts <= EXEC_FINISHED_RUN_DEDUPE_WINDOW_MS && entry.preDelivered,
+  );
+}
+
+export function hasRecentExecFinishedForRun(params: {
+  nodeId: string;
+  sessionKey: string;
+  runId: string;
+}): boolean {
+  const entry = recentExecFinishedRuns.get(execFinishedFingerprint(params));
+  return Boolean(entry && Date.now() - entry.ts <= EXEC_FINISHED_RUN_DEDUPE_WINDOW_MS);
 }
 
 export function resetExecFinishedDeduplicationForTests(): void {

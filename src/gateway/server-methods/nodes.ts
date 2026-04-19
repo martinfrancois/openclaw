@@ -46,6 +46,7 @@ import { createKnownNodeCatalog, getKnownNode, listKnownNodes } from "../node-ca
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import {
   clearRecentExecFinishedForRun,
+  hasRecentExecFinishedForRun,
   markExecFinishedDelivered,
 } from "../node-exec-finished-dedupe.js";
 import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.js";
@@ -1417,16 +1418,19 @@ export const nodeHandlers: GatewayRequestHandlers = {
         command,
         forwardedParams: forwardedParams.params,
       });
-      // Sync deferred routes before dispatch. Conflicting reused runIds are cleared
-      // instead of replaced so an older in-flight completion cannot steal the new route.
-      rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
-      const res = await context.nodeRegistry.invoke({
-        nodeId,
-        command,
-        params: invokeForwardedParams,
-        timeoutMs: p.timeoutMs,
-        idempotencyKey: p.idempotencyKey,
-      });
+      let res;
+      try {
+        res = await context.nodeRegistry.invoke({
+          nodeId,
+          command,
+          params: invokeForwardedParams,
+          timeoutMs: p.timeoutMs,
+          idempotencyKey: p.idempotencyKey,
+        });
+      } catch (error) {
+        rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+        throw error;
+      }
       if (!res.ok) {
         if (
           shouldQueueAsPendingForegroundAction({
@@ -1435,6 +1439,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
             error: res.error,
           })
         ) {
+          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
           const paramsJSON = toPendingParamsJSON(forwardedParams.params);
           const queued = enqueuePendingNodeAction({
             nodeId,
@@ -1474,7 +1479,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
           );
           return;
         }
-        if (!shouldKeepForwardedSystemRunDeliveryContextOnError(res.error)) {
+        if (shouldKeepForwardedSystemRunDeliveryContextOnError(res.error)) {
+          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+        } else {
           forgetForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
         }
         if (!respondUnavailableOnNodeInvokeError(respond, res)) {
@@ -1508,6 +1515,18 @@ export const nodeHandlers: GatewayRequestHandlers = {
           routeRegistration?.suppressNotifyOnExit !== true &&
           resolveExecNotifyOnExitEnabled(routedSuccessRun.sessionKey)
         ) {
+          if (
+            hasRecentExecFinishedForRun({
+              nodeId,
+              sessionKey: routedSuccessRun.sessionKey,
+              runId: routedSuccessRun.runId,
+            })
+          ) {
+            if (routeRegistration) {
+              forgetNodeExecDeliveryContext(routeRegistration);
+            }
+            return;
+          }
           const fallbackText = buildSystemRunSuccessFallbackText({
             nodeId,
             runId: routedSuccessRun.runId,

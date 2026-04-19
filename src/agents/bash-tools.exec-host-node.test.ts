@@ -333,7 +333,7 @@ describe("executeNodeHostCommand", () => {
     const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
       params?: { suppressNotifyOnExit?: boolean };
     };
-    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
     expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
       { approvalId: "approval-1" },
       "Exec finished (node=node-1 id=approval-1, code 0)\nok",

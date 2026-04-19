@@ -1406,7 +1406,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("keeps cached delivery context for immediate system.run denial results", async () => {
+  it("drops cached delivery context for immediate system.run denial results", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -1450,12 +1450,7 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-denied",
       }),
-    ).toEqual({
-      accountId: "trusted-account",
-      channel: "signal",
-      threadId: "99",
-      to: "+15551234567",
-    });
+    ).toBeUndefined();
   });
 
   it("marks routed system.run completions before replying to the caller", async () => {

@@ -506,10 +506,7 @@ function shouldKeepForwardedSystemRunDeliveryContextOnError(error: unknown): boo
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toUpperCase());
   return haystacks.some(
-    (value) =>
-      value === "TIMEOUT" ||
-      value.includes("QUEUED_UNTIL_FOREGROUND") ||
-      value.includes("SYSTEM_RUN_DENIED"),
+    (value) => value === "TIMEOUT" || value.includes("QUEUED_UNTIL_FOREGROUND"),
   );
 }
 

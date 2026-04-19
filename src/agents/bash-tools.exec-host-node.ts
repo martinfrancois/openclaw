@@ -120,6 +120,41 @@ function isTerminalApprovedNodeInvokeFailure(error: unknown): boolean {
   return haystacks.some((value) => value.includes("SYSTEM_RUN_DENIED"));
 }
 
+function summarizeTerminalApprovedNodeInvokeFailure(error: unknown): string {
+  const candidate =
+    error && typeof error === "object"
+      ? (error as {
+          message?: unknown;
+          details?: unknown;
+        })
+      : null;
+  const nodeError =
+    candidate?.details && typeof candidate.details === "object"
+      ? ((candidate.details as { nodeError?: unknown }).nodeError as
+          | {
+              message?: unknown;
+            }
+          | undefined)
+      : undefined;
+  const rawMessages = [
+    normalizeOptionalString(nodeError?.message),
+    normalizeOptionalString(candidate?.message),
+    formatErrorMessage(error),
+  ].filter((value): value is string => Boolean(value));
+  for (const message of rawMessages) {
+    const match = /SYSTEM_RUN_DENIED:\s*(.+)$/iu.exec(message);
+    const reason = normalizeOptionalString(match?.[1])?.trim();
+    if (!reason) {
+      continue;
+    }
+    if (reason.toLowerCase() === "approval required") {
+      return "approval-required";
+    }
+    return reason;
+  }
+  return "approval-required";
+}
+
 function isPendingQueuedNodeInvoke(error: unknown): boolean {
   const candidate =
     error && typeof error === "object"
@@ -539,7 +574,7 @@ export async function executeNodeHostCommand(
           if (isTerminalApprovedNodeInvokeFailure(error)) {
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
-              `Exec denied (node=${nodeId} id=${approvalId}, approval-required): ${params.command}`,
+              `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
             );
             return;
           }

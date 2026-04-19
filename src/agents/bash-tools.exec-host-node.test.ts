@@ -181,16 +181,16 @@ function createQueuedUntilForegroundError(): Error & {
   );
 }
 
-function createSystemRunDeniedError(): Error & {
+function createSystemRunDeniedError(message = "approval required"): Error & {
   code: string;
   details: { nodeError: { code: string; message: string } };
 } {
-  return Object.assign(new Error("UNAVAILABLE: SYSTEM_RUN_DENIED: approval required"), {
+  return Object.assign(new Error(`UNAVAILABLE: SYSTEM_RUN_DENIED: ${message}`), {
     code: "UNAVAILABLE",
     details: {
       nodeError: {
         code: "UNAVAILABLE",
-        message: "SYSTEM_RUN_DENIED: approval required",
+        message: `SYSTEM_RUN_DENIED: ${message}`,
       },
     },
   });
@@ -630,6 +630,44 @@ describe("executeNodeHostCommand", () => {
       params?: { suppressNotifyOnExit?: boolean };
     };
     expect(invokeParams.params?.suppressNotifyOnExit).toBe(true);
+  });
+
+  it("preserves specific post-approval deny reasons for async node invokes", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createSystemRunDeniedError("approval cwd changed before execution");
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec denied (node=node-1 id=approval-1, approval cwd changed before execution): bun ./script.ts",
+      );
+    });
   });
 
   it("reports concrete dispatch failures immediately when no deferred result will arrive", async () => {

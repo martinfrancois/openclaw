@@ -15,6 +15,14 @@ const isSystemRunInvokeReplyFallbackErrorMock = vi.hoisted(() =>
 vi.mock("./invoke-system-run.js", () => ({
   buildSystemRunApprovalPlan: vi.fn(),
   handleSystemRunInvoke: handleSystemRunInvokeMock,
+  isSystemRunInvokeReplyBestEffortError: vi.fn((error: unknown) =>
+    Boolean(
+      error &&
+      typeof error === "object" &&
+      (error as { __systemRunInvokeReplyBestEffort?: unknown }).__systemRunInvokeReplyBestEffort ===
+        true,
+    ),
+  ),
   isSystemRunInvokeReplyFallbackError: isSystemRunInvokeReplyFallbackErrorMock,
 }));
 
@@ -189,6 +197,27 @@ describe("handleInvoke", () => {
           paramsJSON: JSON.stringify({ command: ["echo", "ok"] }),
         },
         client as never,
+        { current: async () => [] },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("keeps successful invoke reply delivery failures best-effort", async () => {
+    handleSystemRunInvokeMock.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("request socket closed"), {
+        __systemRunInvokeReplyBestEffort: true,
+      });
+    });
+
+    await expect(
+      handleInvoke(
+        {
+          id: "req-5",
+          nodeId: "node-1",
+          command: "system.run",
+          paramsJSON: JSON.stringify({ command: ["echo", "ok"] }),
+        },
+        { request: vi.fn() } as never,
         { current: async () => [] },
       ),
     ).resolves.toBeUndefined();

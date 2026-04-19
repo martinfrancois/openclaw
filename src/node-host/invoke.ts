@@ -22,6 +22,7 @@ import { sanitizeHostExecEnv } from "../infra/host-env-security.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import {
   buildSystemRunApprovalPlan,
+  isSystemRunInvokeReplyBestEffortError,
   handleSystemRunInvoke,
   isSystemRunInvokeReplyFallbackError,
 } from "./invoke-system-run.js";
@@ -586,7 +587,10 @@ export async function handleInvoke(
   } catch (error) {
     // After system.run falls back to exec.finished delivery, a dropped invoke reply
     // should not crash the node-host event loop.
-    if (!isSystemRunInvokeReplyFallbackError(error)) {
+    if (
+      !isSystemRunInvokeReplyFallbackError(error) &&
+      !isSystemRunInvokeReplyBestEffortError(error)
+    ) {
       throw error;
     }
   }

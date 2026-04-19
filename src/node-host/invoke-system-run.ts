@@ -123,6 +123,7 @@ type SystemRunPolicyPhase = SystemRunParsePhase & {
 };
 
 const SYSTEM_RUN_INVOKE_REPLY_FALLBACK = Symbol.for("openclaw.systemRunInvokeReplyFallback");
+const SYSTEM_RUN_INVOKE_REPLY_BEST_EFFORT = Symbol.for("openclaw.systemRunInvokeReplyBestEffort");
 
 const safeBinTrustedDirWarningCache = new Set<string>();
 const APPROVAL_CWD_DRIFT_DENIED_MESSAGE =
@@ -329,11 +330,8 @@ async function sendSystemRunCompleted(
     );
   }
   if (invokeResultError) {
-    if (execution.suppressNotifyOnExit) {
-      throw invokeResultError;
-    }
-    if (execFinishedError) {
-      throw invokeResultError;
+    if (execution.suppressNotifyOnExit || execFinishedError) {
+      throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
     }
     const notifySettings = await resolveExecNotifyOnExitEnabled({
       agentId: execution.agentId,
@@ -344,7 +342,7 @@ async function sendSystemRunCompleted(
       !notifySettings.notifyOnExit ||
       !shouldEmitExecFinishedFollowUp(result, notifySettings.notifyOnExitEmptySuccess)
     ) {
-      throw invokeResultError;
+      throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
   }
@@ -368,12 +366,37 @@ function tagSystemRunInvokeReplyFallbackError(error: unknown): Error {
   return tagged;
 }
 
+function tagSystemRunInvokeReplyBestEffortError(error: unknown): Error {
+  const fallbackMessage =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "system.run invoke reply failed";
+  const tagged = error instanceof Error ? error : new Error(fallbackMessage);
+  Object.defineProperty(tagged, SYSTEM_RUN_INVOKE_REPLY_BEST_EFFORT, {
+    value: true,
+    configurable: true,
+  });
+  return tagged;
+}
+
 export function isSystemRunInvokeReplyFallbackError(error: unknown): boolean {
   return Boolean(
     error &&
     typeof error === "object" &&
     (error as { [SYSTEM_RUN_INVOKE_REPLY_FALLBACK]?: unknown })[
       SYSTEM_RUN_INVOKE_REPLY_FALLBACK
+    ] === true,
+  );
+}
+
+export function isSystemRunInvokeReplyBestEffortError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (error as { [SYSTEM_RUN_INVOKE_REPLY_BEST_EFFORT]?: unknown })[
+      SYSTEM_RUN_INVOKE_REPLY_BEST_EFFORT
     ] === true,
   );
 }

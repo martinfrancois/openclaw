@@ -27,7 +27,11 @@ import {
 } from "../infra/exec-approvals.js";
 import type { ExecHostResponse } from "../infra/exec-host.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
-import { handleSystemRunInvoke, formatSystemRunAllowlistMissMessage } from "./invoke-system-run.js";
+import {
+  formatSystemRunAllowlistMissMessage,
+  handleSystemRunInvoke,
+  isSystemRunInvokeReplyFallbackError,
+} from "./invoke-system-run.js";
 import type { HandleSystemRunInvokeOptions } from "./invoke-system-run.js";
 
 type MockedRunCommand = Mock<HandleSystemRunInvokeOptions["runCommand"]>;
@@ -417,6 +421,8 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     ask?: "off" | "on-miss" | "always";
     approvalDecision?: "allow" | "allow-always" | "deny" | null;
     approved?: boolean;
+    agentId?: string;
+    sessionKey?: string;
     runCommand?: HandleSystemRunInvokeOptions["runCommand"];
     runViaMacAppExecHost?: HandleSystemRunInvokeOptions["runViaMacAppExecHost"];
     sendInvokeResult?: HandleSystemRunInvokeOptions["sendInvokeResult"];
@@ -477,7 +483,8 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         suppressNotifyOnExit: params.suppressNotifyOnExit,
         approvalDecision: params.approvalDecision,
         approved: params.approved ?? false,
-        sessionKey: "agent:main:main",
+        agentId: params.agentId,
+        sessionKey: params.sessionKey ?? "agent:main:main",
       },
       skillBins: {
         current: params.skillBinsCurrent ?? (async () => []),
@@ -700,6 +707,48 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       }),
     ).rejects.toThrow("request socket closed");
 
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors agent-scoped notifyOnExit overrides for relative session keys", async () => {
+    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
+      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
+    >(async () => undefined);
+
+    let thrown: unknown;
+    try {
+      await runSystemInvoke({
+        preferMacAppExecHost: false,
+        agentId: "ops",
+        sessionKey: "main",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+        sendExecFinishedEvent,
+        loadConfig: () =>
+          ({
+            tools: { exec: { notifyOnExit: true } },
+            agents: {
+              list: [
+                {
+                  id: "ops",
+                  tools: { exec: { notifyOnExit: false } },
+                },
+              ],
+            },
+          }) as OpenClawConfig,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(false);
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 

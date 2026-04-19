@@ -3,6 +3,7 @@ import { resolveAgentConfig } from "../agents/agent-scope-config.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayClient } from "../gateway/client.js";
+import { canonicalizeSessionKeyForAgent } from "../gateway/session-store-key.js";
 import {
   addDurableCommandApproval,
   hasDurableExecApproval,
@@ -74,6 +75,7 @@ type SystemRunDeniedReason =
   | "permission:screenRecording";
 
 type SystemRunExecutionContext = {
+  agentId?: string;
   sessionKey: string;
   runId: string;
   commandText: string;
@@ -207,14 +209,19 @@ async function loadSystemRunConfig(opts: HandleSystemRunInvokeOptions): Promise<
 }
 
 async function resolveExecNotifyOnExitEnabled(params: {
+  agentId?: string;
   loadConfig?: () => OpenClawConfig;
   sessionKey: string;
 }): Promise<boolean> {
   const cfg = params.loadConfig
     ? params.loadConfig()
     : (await import("../config/config.js")).loadConfig();
+  const canonicalSessionKey =
+    params.agentId && !params.sessionKey.toLowerCase().startsWith("agent:")
+      ? canonicalizeSessionKeyForAgent(params.agentId, params.sessionKey)
+      : params.sessionKey;
   const globalExec = cfg.tools?.exec;
-  const sessionAgentId = resolveSessionAgentId({ sessionKey: params.sessionKey, config: cfg });
+  const sessionAgentId = resolveSessionAgentId({ sessionKey: canonicalSessionKey, config: cfg });
   const agentExec = sessionAgentId
     ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
     : undefined;
@@ -307,6 +314,7 @@ async function sendSystemRunCompleted(
     }
     if (
       !(await resolveExecNotifyOnExitEnabled({
+        agentId: execution.agentId,
         loadConfig: opts.loadConfig,
         sessionKey: execution.sessionKey,
       }))
@@ -450,7 +458,7 @@ async function parseSystemRunPhase(
     agentId,
     sessionKey,
     runId,
-    execution: { sessionKey, runId, commandText, deliveryContext, suppressNotifyOnExit },
+    execution: { agentId, sessionKey, runId, commandText, deliveryContext, suppressNotifyOnExit },
     approvalDecision: resolveExecApprovalDecision(opts.params.approvalDecision),
     envOverrides,
     env: opts.sanitizeEnv(envOverrides),

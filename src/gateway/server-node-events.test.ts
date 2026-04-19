@@ -677,6 +677,51 @@ describe("node exec events", () => {
     ).toHaveLength(0);
   });
 
+  it("clears pre-delivered dedupe when a quiet completion is dropped", async () => {
+    const ctx = buildCtx();
+    markExecFinishedDelivered({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered-quiet",
+    });
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-quiet",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+      }),
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.started",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-quiet",
+        command: "echo done",
+      }),
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-quiet",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+      }),
+    });
+
+    expect(
+      enqueueSystemEventMock.mock.calls.filter(
+        ([text]) => text === "Exec finished (node=node-2 id=run-pre-delivered-quiet, code 0)\ndone",
+      ),
+    ).toHaveLength(1);
+    expect(requestHeartbeatNowMock).toHaveBeenCalledTimes(1);
+  });
+
   it("canonicalizes exec session key before enqueue and wake", async () => {
     loadSessionEntryMock.mockReturnValueOnce({
       ...buildSessionLookup("node-node-2"),

@@ -537,12 +537,10 @@ export async function executeNodeHostCommand(
             return;
           }
           if (isTerminalApprovedNodeInvokeFailure(error)) {
-            if (!notifyOnExit) {
-              await execHostShared.sendExecApprovalFollowupResult(
-                followupTarget,
-                `Exec denied (node=${nodeId} id=${approvalId}, approval-required): ${params.command}`,
-              );
-            }
+            await execHostShared.sendExecApprovalFollowupResult(
+              followupTarget,
+              `Exec denied (node=${nodeId} id=${approvalId}, approval-required): ${params.command}`,
+            );
             return;
           }
           await execHostShared.sendExecApprovalFollowupResult(
@@ -574,6 +572,7 @@ export async function executeNodeHostCommand(
     "node.invoke",
     { timeoutMs: invokeTimeoutMs },
     buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId, {
+      includeDeliveryContext: notifyOnExit,
       suppressNotifyOnExit: !notifyOnExit,
     }),
   );

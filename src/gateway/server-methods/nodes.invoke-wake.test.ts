@@ -977,6 +977,73 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
+  it("prefers backend deliveryContext when the stored trusted route is stale", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100999",
+        accountId: "stale-account",
+        threadId: "topic-11",
+      },
+      threadId: "topic-11",
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      client: createBackendClient(),
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-backend-stale-store",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        },
+      },
+    });
+
+    expect(nodeRegistry.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        }),
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-backend-stale-store",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: "topic-47",
+    });
+  });
+
   it("ignores stripped deliveryContext overrides that change the base route", async () => {
     mocks.sanitizeNodeInvokeParamsForForwarding.mockImplementation(
       ({ rawParams }: { rawParams: unknown }) => {

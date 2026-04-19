@@ -384,7 +384,9 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("does not forward the run delivery context for async node invokes", async () => {
+  it("forwards the current turn delivery context for node invokes that may complete later", async () => {
+    requiresExecApprovalMock.mockReturnValue(false);
+
     await executeNodeHostCommand({
       command: "bun ./script.ts",
       workdir: "/tmp/work",
@@ -414,9 +416,21 @@ describe("executeNodeHostCommand", () => {
       }),
     );
     const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
-      params?: { deliveryContext?: unknown };
+      params?: {
+        deliveryContext?: {
+          channel: string;
+          to: string;
+          accountId: string;
+          threadId: number;
+        };
+      };
     };
-    expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
+    expect(asyncInvokeParams.params?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("reports a non-terminal timeout when the async node invoke times out", async () => {
@@ -569,7 +583,10 @@ describe("executeNodeHostCommand", () => {
     await vi.waitFor(() => {
       expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
     });
-    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      { approvalId: "approval-1" },
+      "Exec denied (node=node-1 id=approval-1, approval-required): bun ./script.ts",
+    );
   });
 
   it("reports explicit system.run denials directly when notifyOnExit is disabled", async () => {
@@ -653,7 +670,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("keeps synchronous node execs inline without forwarding delivery context", async () => {
+  it("does not forward delivery context when deferred completion followups are disabled", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 
     await executeNodeHostCommand({
@@ -666,6 +683,7 @@ describe("executeNodeHostCommand", () => {
       approvalRunningNoticeMs: 0,
       warnings: [],
       sessionKey: "requested-session",
+      notifyOnExit: false,
       turnSourceChannel: "telegram",
       turnSourceTo: "-100123",
       turnSourceAccountId: "primary",
@@ -692,7 +710,7 @@ describe("executeNodeHostCommand", () => {
         };
       };
     };
-    expect(syncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(syncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
     expect(syncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 

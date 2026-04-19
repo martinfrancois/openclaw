@@ -295,7 +295,7 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
                     : {}),
                 }
               : trustedSessionDeliveryContext
-          : (trustedSessionDeliveryContext ?? explicitDeliveryContext);
+          : (explicitDeliveryContext ?? trustedSessionDeliveryContext);
   return {
     nodeId,
     sessionKey,

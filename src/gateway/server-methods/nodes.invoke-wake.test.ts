@@ -910,6 +910,68 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
+  it("keeps backend deliveryContext when no trusted session route exists yet", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: undefined,
+      threadId: undefined,
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      client: createBackendClient(),
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-backend-no-store",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        },
+      },
+    });
+
+    expect(nodeRegistry.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        }),
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-backend-no-store",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: "topic-47",
+    });
+  });
+
   it("ignores stripped deliveryContext overrides that change the base route", async () => {
     mocks.sanitizeNodeInvokeParamsForForwarding.mockImplementation(
       ({ rawParams }: { rawParams: unknown }) => {
@@ -1181,7 +1243,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("does not cache an explicit route when no trusted session route exists", async () => {
+  it("falls back to an explicit route when no trusted session route exists", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
       threadId: undefined,
@@ -1219,7 +1281,12 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:synthetic-session",
         runId: "run-route-explicit-fallback",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("does not cache delivery context for suppressed system.run notifications", async () => {
@@ -1513,6 +1580,52 @@ describe("node.invoke APNs wake path", () => {
         now: Date.now(),
       }),
     ).toBe("pre-delivered");
+  });
+
+  it("clears stale exec-finished dedupe state before reusing a routed runId", async () => {
+    markExecFinishedDelivered({
+      nodeId: "ios-node-1",
+      sessionKey: "agent:main:main",
+      runId: "run-route-reused",
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-reused",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
+          },
+        },
+      },
+    });
+
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused",
+        now: Date.now(),
+      }),
+    ).toBe("enqueue");
   });
 
   it("queues a routed success fallback when replying with a routed success throws", async () => {
@@ -2123,7 +2236,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("keeps older dedupe markers until a reused run actually restarts", async () => {
+  it("clears older dedupe markers when a reused run is dispatched again", async () => {
     markExecFinishedDelivered({
       nodeId: "ios-node-1",
       sessionKey: "agent:main:main",
@@ -2174,7 +2287,7 @@ describe("node.invoke APNs wake path", () => {
         runId: "run-route-reused-pending",
         now: Date.now(),
       }),
-    ).toBe("pre-delivered");
+    ).toBe("enqueue");
   });
 
   it("keeps node exec delivery routes available beyond one hour", () => {

@@ -758,20 +758,17 @@ function hasOnlySharedRoutedEventsForExecFallback(
   return true;
 }
 
-function hasOnlySharedRoutedNodeExecCompletionsForExplicitExecReply(
+function hasOnlySharedRoutedExecCompletionsForExplicitExecReply(
   pendingEventEntries: readonly SystemEvent[],
   sharedExecCompletionDeliveryContext: DeliveryContext | undefined,
 ): boolean {
   if (!sharedExecCompletionDeliveryContext) {
     return false;
   }
-  let sawNodeExecCompletion = false;
+  let sawExecCompletion = false;
   for (const event of pendingEventEntries) {
     if (!isExecCompletionEvent(event.text)) {
       continue;
-    }
-    if (!/^Exec (?:finished|denied) \(node=/iu.test(event.text.trim())) {
-      return false;
     }
     const normalizedEventContext = normalizeDeliveryContext(event.deliveryContext);
     if (!normalizedEventContext?.channel || !normalizedEventContext.to) {
@@ -782,9 +779,9 @@ function hasOnlySharedRoutedNodeExecCompletionsForExplicitExecReply(
     ) {
       return false;
     }
-    sawNodeExecCompletion = true;
+    sawExecCompletion = true;
   }
-  return sawNodeExecCompletion;
+  return sawExecCompletion;
 }
 
 function hasOnlySharedOrUnroutedPendingEventsForExecFallback(
@@ -1480,11 +1477,11 @@ export async function runHeartbeatOnce(opts: {
     const canRouteExplicitExecReplyToSharedContext =
       !replyLookedLikeHeartbeatOk &&
       normalized.text.trim().length > 0 &&
-      hasOnlySharedOrUnroutedPendingEventsForExecFallback(
+      hasOnlySharedRoutedEventsForExecFallback(
         preflight.pendingEventEntries,
         sharedExecCompletionDeliveryContext,
       ) &&
-      hasOnlySharedRoutedNodeExecCompletionsForExplicitExecReply(
+      hasOnlySharedRoutedExecCompletionsForExplicitExecReply(
         preflight.pendingEventEntries,
         sharedExecCompletionDeliveryContext,
       );

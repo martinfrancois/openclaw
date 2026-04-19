@@ -42,7 +42,10 @@ import {
 } from "../canvas-capability.js";
 import { createKnownNodeCatalog, getKnownNode, listKnownNodes } from "../node-catalog.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
-import { markExecFinishedDelivered } from "../node-exec-finished-dedupe.js";
+import {
+  clearRecentExecFinishedForRun,
+  markExecFinishedDelivered,
+} from "../node-exec-finished-dedupe.js";
 import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.js";
 import {
   type ConnectParams,
@@ -289,7 +292,7 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
                     : {}),
                 }
               : trustedSessionDeliveryContext
-          : trustedSessionDeliveryContext;
+          : (trustedSessionDeliveryContext ?? explicitDeliveryContext);
   return {
     nodeId,
     sessionKey,
@@ -460,6 +463,9 @@ function rememberForwardedSystemRunDeliveryContext(
   );
   if (!registration) {
     return;
+  }
+  if (registration.sessionKey && registration.runId) {
+    clearRecentExecFinishedForRun(nodeId, registration.sessionKey, registration.runId);
   }
   if (!registration.deliveryContext) {
     forgetNodeExecDeliveryContext(registration);

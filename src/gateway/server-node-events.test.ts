@@ -792,7 +792,7 @@ describe("node exec events", () => {
     });
   });
 
-  it("consumes cached exec routes for quiet exec.finished completions", async () => {
+  it("keeps cached exec routes for quiet exec.finished completions", async () => {
     rememberNodeExecDeliveryContext({
       nodeId: "node-2",
       sessionKey: "agent:main:main",
@@ -820,6 +820,67 @@ describe("node exec events", () => {
         nodeId: "node-2",
         sessionKey: "agent:main:main",
         runId: "run-quiet-consume",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      threadId: 47,
+    });
+  });
+
+  it("reuses the cached route when a quiet completion is replayed with notifyDeliveryFailed", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-quiet-replay",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    const ctx = buildCtx();
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-quiet-replay",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+      }),
+    });
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-quiet-replay",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+        notifyDeliveryFailed: true,
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-quiet-replay, code 0)",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-quiet-replay",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        trusted: false,
+      },
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-quiet-replay",
       }),
     ).toBeUndefined();
   });

@@ -677,12 +677,6 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
             if (hasPreDeliveredExecFinishedForRun({ nodeId, sessionKey, runId })) {
               clearRecentExecFinishedForRun(nodeId, sessionKey, runId);
             }
-            resolveNodeExecDeliveryContext({
-              nodeId,
-              sessionKey,
-              runId,
-              consume: true,
-            });
           }
           return;
         }

@@ -1698,7 +1698,7 @@ export async function runHeartbeatOnce(opts: {
 
     emitHeartbeatEvent({
       status: "sent",
-      to: delivery.to,
+      to: outboundDelivery.to,
       preview: previewText?.slice(0, 200),
       durationMs: Date.now() - startedAt,
       hasMedia: mediaUrls.length > 0,

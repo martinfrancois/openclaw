@@ -15,6 +15,7 @@ import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/run
 import { buildAgentPeerSessionKey } from "../routing/session-key.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { typedCases } from "../test-utils/typed-cases.js";
+import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import {
   type HeartbeatDeps,
   isHeartbeatEnabledForAgent,
@@ -34,6 +35,10 @@ let testRegistry: ReturnType<typeof getActivePluginRegistry> | null = null;
 
 let fixtureRoot = "";
 let fixtureCount = 0;
+
+beforeEach(() => {
+  resetHeartbeatEventsForTest();
+});
 
 function normalizeWhatsAppTargetForTest(raw: string): string | null {
   const trimmed = raw
@@ -2118,7 +2123,13 @@ describe("runHeartbeatOnce", () => {
       });
       expect(res.status).toBe("ran");
       expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expect(sendWhatsApp.mock.calls[0]?.[0]).toBe("120363401234567890@g.us");
       expect(sendWhatsApp.mock.calls[0]?.[1]).toBe("Handled follow-up");
+      expect(getLastHeartbeatEvent()).toMatchObject({
+        status: "sent",
+        channel: "whatsapp",
+        to: "120363401234567890@g.us",
+      });
     } finally {
       replySpy.mockReset();
     }

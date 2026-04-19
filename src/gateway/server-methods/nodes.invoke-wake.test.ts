@@ -512,7 +512,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("keeps cached delivery context for successful routed system.run responses", async () => {
+  it("drops cached delivery context for successful routed system.run responses", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -546,12 +546,7 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-sync-routed-success",
       }),
-    ).toEqual({
-      channel: "signal",
-      to: "+15551234567",
-      accountId: "trusted-account",
-      threadId: "99",
-    });
+    ).toBeUndefined();
   });
 
   it("preserves the originating thread when a deferred session thread has moved", async () => {
@@ -1243,7 +1238,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("falls back to an explicit route when no trusted session route exists", async () => {
+  it("uses an explicit route for the immediate reply when no trusted session route exists", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
       threadId: undefined,
@@ -1281,12 +1276,7 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:synthetic-session",
         runId: "run-route-explicit-fallback",
       }),
-    ).toEqual({
-      channel: "telegram",
-      to: "-100123",
-      accountId: "primary",
-      threadId: 47,
-    });
+    ).toBeUndefined();
   });
 
   it("does not cache delivery context for suppressed system.run notifications", async () => {
@@ -1580,6 +1570,13 @@ describe("node.invoke APNs wake path", () => {
         now: Date.now(),
       }),
     ).toBe("pre-delivered");
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-success",
+      }),
+    ).toBeUndefined();
   });
 
   it("clears stale exec-finished dedupe state before reusing a routed runId", async () => {
@@ -1704,6 +1701,13 @@ describe("node.invoke APNs wake path", () => {
         now: Date.now(),
       }),
     ).toBe("pre-delivered");
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-success-reply-failed",
+      }),
+    ).toBeUndefined();
   });
 
   it("does not mark routed success as pre-delivered when the queued fallback cannot be recorded", async () => {

@@ -317,28 +317,6 @@ function ensureForwardedSystemRunRunId(command: string, forwardedParams: unknown
   };
 }
 
-function hasExplicitForwardedSystemRunDeliveryContext(
-  command: string,
-  forwardedParams: unknown,
-): boolean {
-  if (command !== "system.run" || typeof forwardedParams !== "object" || forwardedParams === null) {
-    return false;
-  }
-  const params = forwardedParams as { deliveryContext?: unknown };
-  return Boolean(
-    normalizeDeliveryContext(
-      params.deliveryContext as
-        | {
-            channel?: string;
-            to?: string;
-            accountId?: string;
-            threadId?: string | number;
-          }
-        | undefined,
-    )?.channel,
-  );
-}
-
 function restoreForwardedSystemRunDeliveryContext(params: {
   command: string;
   sanitizedForwardedParams: unknown;
@@ -1422,9 +1400,6 @@ export const nodeHandlers: GatewayRequestHandlers = {
         command,
         forwardedParams.params,
       );
-      const keepRoutedSuccessDeliveryContext =
-        Boolean(routeRegistration?.deliveryContext) &&
-        hasExplicitForwardedSystemRunDeliveryContext(command, forwardedParams.params);
       const invokeForwardedParams = applyTrustedSystemRunDeliveryContext({
         nodeId,
         command,
@@ -1522,7 +1497,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
             runId: routedSuccessRun.runId,
           });
         }
-        if (routeRegistration?.deliveryContext && !keepRoutedSuccessDeliveryContext) {
+        if (routeRegistration?.deliveryContext) {
           forgetNodeExecDeliveryContext(routeRegistration);
         }
       } catch (error) {
@@ -1552,7 +1527,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
           requestHeartbeatNow(
             scopedHeartbeatWakeOptions(routedSuccessRun.sessionKey, { reason: "exec-event" }),
           );
-          if (routeRegistration && !keepRoutedSuccessDeliveryContext) {
+          if (routeRegistration) {
             forgetNodeExecDeliveryContext(routeRegistration);
           }
           return;

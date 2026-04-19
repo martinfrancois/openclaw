@@ -5,6 +5,7 @@ import type { SessionEntry } from "./types.js";
 
 const storeState = vi.hoisted(() => ({
   store: {} as Record<string, SessionEntry>,
+  storesByPath: {} as Record<string, Record<string, SessionEntry>>,
   resolveStorePath: vi.fn(() => "/tmp/sessions.json"),
 }));
 
@@ -17,7 +18,9 @@ vi.mock("./paths.js", () => ({
 }));
 
 vi.mock("./store.js", () => ({
-  loadSessionStore: () => storeState.store,
+  loadSessionStore: (storePath?: string) =>
+    (typeof storePath === "string" ? storeState.storesByPath[storePath] : undefined) ??
+    storeState.store,
 }));
 
 let extractDeliveryInfo: typeof import("./delivery-info.js").extractDeliveryInfo;
@@ -36,6 +39,7 @@ beforeAll(async () => {
 beforeEach(() => {
   setActivePluginRegistry(createSessionConversationTestRegistry());
   storeState.store = {};
+  storeState.storesByPath = {};
   storeState.resolveStorePath.mockClear();
   storeState.resolveStorePath.mockReturnValue("/tmp/sessions.json");
 });
@@ -237,6 +241,32 @@ describe("extractDeliveryInfo", () => {
         channel: "webchat",
         to: "webchat:user-123",
         accountId: "ops-account",
+      },
+      threadId: undefined,
+    });
+  });
+
+  it("falls back to the legacy default session store when an agent store has not been migrated", () => {
+    const sessionKey = "agent:ops:webchat:dm:user-legacy";
+    storeState.resolveStorePath.mockImplementation((_, opts?: { agentId?: string }) =>
+      opts?.agentId ? `/tmp/${opts.agentId}.json` : "/tmp/sessions.json",
+    );
+    storeState.storesByPath["/tmp/ops.json"] = {};
+    storeState.storesByPath["/tmp/sessions.json"] = {
+      [sessionKey]: buildEntry({
+        channel: "webchat",
+        to: "webchat:user-legacy",
+        accountId: "legacy-account",
+      }),
+    };
+
+    const result = extractDeliveryInfo(sessionKey);
+
+    expect(result).toEqual({
+      deliveryContext: {
+        channel: "webchat",
+        to: "webchat:user-legacy",
+        accountId: "legacy-account",
       },
       threadId: undefined,
     });

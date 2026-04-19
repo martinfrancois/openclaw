@@ -983,7 +983,8 @@ function resolveAssignedCapturedBackgroundPidCount(
     if (next === "{") {
       const end = rhs.indexOf("}", i + 2);
       if (end > i + 2) {
-        const varName = rhs.slice(i + 2, end);
+        const rawVarName = rhs.slice(i + 2, end);
+        const varName = rawVarName.replace(/\[(?:@|\*)\]$/u, "");
         count += capturedBackgroundPidCounts.get(varName) ?? 0;
         i = end;
       }
@@ -1053,7 +1054,7 @@ function resolveWaitOperandCapturedPidVariable(
   waitOperand: string,
 ): { expandsAll: boolean; name: string; quoted: boolean } | null {
   const trimmed = waitOperand.trim();
-  const bareArrayMatch = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}$/u.exec(trimmed);
+  const bareArrayMatch = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\[(?:@|\*)\]\}$/u.exec(trimmed);
   if (bareArrayMatch) {
     return { expandsAll: true, name: bareArrayMatch[1], quoted: false };
   }
@@ -1069,7 +1070,7 @@ function resolveWaitOperandCapturedPidVariable(
   if (quotedBareMatch) {
     return { expandsAll: false, name: quotedBareMatch[1], quoted: true };
   }
-  const quotedArrayMatch = /^"\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}"$/u.exec(trimmed);
+  const quotedArrayMatch = /^"\$\{([A-Za-z_][A-Za-z0-9_]*)\[(?:@|\*)\]\}"$/u.exec(trimmed);
   if (quotedArrayMatch) {
     return { expandsAll: true, name: quotedArrayMatch[1], quoted: true };
   }
@@ -1225,6 +1226,7 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
 
   const currentBlockPendingJobs = () =>
     pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] ?? 0;
+  let exitTrapWaitArgs: string[] | null = null;
   let shortCircuitWaitFloor = 0;
   let shortCircuitChainActive = false;
   const resetShortCircuitWaitFloor = () => {
@@ -1265,8 +1267,8 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
     return capturedVar.quoted ? (capturedCount === 1 ? 1 : 0) : capturedCount;
   };
 
-  const resolveWaitJoinedJobCount = () => {
-    const waitArgs = resolveWaitCommandArgs();
+  const resolveWaitJoinedJobCount = (waitArgsOverride?: string[] | null) => {
+    const waitArgs = waitArgsOverride ?? resolveWaitCommandArgs();
     if (!waitArgs) {
       return 0;
     }
@@ -1355,21 +1357,50 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
     return match.command ? stripOuterShellQuotes(match.command) : null;
   };
 
-  const resolveWaitCommandArgs = (): string[] | null => {
-    if (currentCommandName === "wait") {
-      return currentCommandArgs;
+  const resolveWaitCommandArgsForCommand = (
+    commandName: string | null,
+    commandArgs: string[],
+  ): string[] | null => {
+    if (commandName === "wait") {
+      return commandArgs;
     }
-    if (currentCommandName === "builtin" && currentCommandArgs[0] === "wait") {
-      return currentCommandArgs.slice(1);
+    if (commandName === "builtin" && commandArgs[0] === "wait") {
+      return commandArgs.slice(1);
     }
-    if (currentCommandName === "command") {
-      const args =
-        currentCommandArgs[0] === "--" ? currentCommandArgs.slice(1) : currentCommandArgs;
+    if (commandName === "command") {
+      const args = commandArgs[0] === "--" ? commandArgs.slice(1) : commandArgs;
       if (args[0] === "wait") {
         return args.slice(1);
       }
     }
     return null;
+  };
+
+  const resolveWaitCommandArgs = (): string[] | null =>
+    resolveWaitCommandArgsForCommand(currentCommandName, currentCommandArgs);
+
+  const resolveExitTrapWaitArgs = (): string[] | null => {
+    if (currentCommandName !== "trap") {
+      return null;
+    }
+    const trapArgs =
+      currentCommandArgs[0] === "--" ? currentCommandArgs.slice(1) : currentCommandArgs;
+    if (trapArgs.length < 2) {
+      return null;
+    }
+    const handler = stripOuterShellQuotes(trapArgs[0]);
+    if (!handler) {
+      return null;
+    }
+    const hasExitTarget = trapArgs.slice(1).some((target) => {
+      const normalized = stripOuterShellQuotes(target)?.toUpperCase();
+      return normalized === "EXIT" || normalized === "0";
+    });
+    if (!hasExitTarget) {
+      return null;
+    }
+    const handlerArgv = splitShellArgs(handler);
+    return resolveWaitCommandArgsForCommand(handlerArgv[0] ?? null, handlerArgv.slice(1));
   };
 
   const finalizeCurrentCommand = (options?: { isFunctionDefinition?: boolean }): boolean => {
@@ -1388,6 +1419,12 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
       : undefined;
     if (!options?.isFunctionDefinition && functionAnalysis?.hasDetached) {
       return true;
+    }
+    if (currentCommandName === "trap") {
+      const trapWaitArgs = resolveExitTrapWaitArgs();
+      if (trapWaitArgs) {
+        exitTrapWaitArgs = trapWaitArgs;
+      }
     }
     const joinedJobCount = resolveWaitJoinedJobCount();
     if (joinedJobCount > 0) {
@@ -1463,10 +1500,10 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
       controlFlowFrames.push({
         terminator: "done",
         kind: "loop",
-        waitFloor: currentBlockPendingJobs(),
+        waitFloor: currentControlFlowWaitFloor(),
       });
     } else if (currentCommandName === "do" && controlFlowFrames.at(-1)?.kind === "loop") {
-      controlFlowFrames[controlFlowFrames.length - 1].waitFloor = currentBlockPendingJobs();
+      controlFlowFrames[controlFlowFrames.length - 1].waitFloor = currentControlFlowWaitFloor();
     } else if (controlFlowFrames.at(-1)?.terminator === currentCommandName) {
       controlFlowFrames.pop();
     }
@@ -1881,6 +1918,15 @@ function analyzeShellBackgrounding(segment: string): ShellBackgroundingAnalysis 
   flushToken();
   if (finalizeCurrentCommand()) {
     return detachedAnalysis();
+  }
+  if (exitTrapWaitArgs && currentBlockPendingJobs() > 0) {
+    const joinedByExitTrap = resolveWaitJoinedJobCount(exitTrapWaitArgs);
+    if (joinedByExitTrap > 0) {
+      pendingBackgroundJobsByBlock[pendingBackgroundJobsByBlock.length - 1] = Math.max(
+        0,
+        currentBlockPendingJobs() - joinedByExitTrap,
+      );
+    }
   }
   const outstandingJobs = pendingBackgroundJobsByBlock.reduce((sum, count) => sum + count, 0);
   return { hasDetached: false, outstandingJobs };
@@ -3608,6 +3654,7 @@ export function createExecTool(
           warnings,
           notifySessionKey,
           notifyOnExit,
+          notifyOnExitEmptySuccess,
           trustedSafeBinDirs,
         });
       }

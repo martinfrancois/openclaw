@@ -720,6 +720,69 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
+  it("does not reapply a stale Telegram topic when the explicit route targets the root chat", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "trusted-account",
+        threadId: 47,
+      },
+      threadId: 47,
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-telegram-root-chat",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "trusted-account",
+          },
+        },
+      },
+    });
+
+    expect(nodeRegistry.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "trusted-account",
+          },
+        }),
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-telegram-root-chat",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "trusted-account",
+    });
+  });
+
   it("preserves explicit account and thread overrides when the trusted route lags them", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: {
@@ -769,6 +832,71 @@ describe("node.invoke APNs wake path", () => {
       to: "-100123",
       accountId: "primary",
       threadId: "topic-47",
+    });
+  });
+
+  it("preserves the trusted thread when a non-Telegram explicit route omits it", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: {
+        channel: "signal",
+        to: "+15551234567",
+        accountId: "trusted-account",
+        threadId: "99",
+      },
+      threadId: "99",
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-thread-preserved",
+          deliveryContext: {
+            channel: "signal",
+            to: "+15551234567",
+            accountId: "trusted-account",
+          },
+        },
+      },
+    });
+
+    expect(nodeRegistry.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          deliveryContext: {
+            channel: "signal",
+            to: "+15551234567",
+            accountId: "trusted-account",
+            threadId: "99",
+          },
+        }),
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-thread-preserved",
+      }),
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
     });
   });
 
@@ -1098,6 +1226,61 @@ describe("node.invoke APNs wake path", () => {
         nodeId: "ios-node-1",
         sessionKey: "agent:main:main",
         runId: "run-route-backend-stale-store",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: "topic-47",
+    });
+  });
+
+  it("preserves an explicit backend account override on the same deferred route", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "trusted-account",
+        threadId: "old-thread",
+      },
+      threadId: "old-thread",
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      client: createBackendClient(),
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-backend-account-override",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-backend-account-override",
       }),
     ).toEqual({
       channel: "telegram",
@@ -1475,6 +1658,49 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
+  it("preserves relative session key casing when agentId scopes a deferred system.run route", async () => {
+    const mixedCaseSessionKey = "matrix:channel:!MixedCase:example.org";
+    const canonicalSessionKey = "agent:ops:matrix:channel:!mixedcase:example.org";
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          agentId: "ops",
+          command: ["echo", "hi"],
+          sessionKey: mixedCaseSessionKey,
+          runId: "run-route-agent-mixed-case",
+        },
+      },
+    });
+
+    expect(mocks.extractDeliveryInfo).toHaveBeenCalledWith(`agent:ops:${mixedCaseSessionKey}`);
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: canonicalSessionKey,
+        runId: "run-route-agent-mixed-case",
+      }),
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
+    });
+  });
+
   it("keeps an explicit route available until the follow-up is delivered when no trusted session route exists", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
@@ -1826,12 +2052,15 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
-  it("clears stale exec-finished dedupe state before reusing a routed runId", async () => {
-    markExecFinishedDelivered({
-      nodeId: "ios-node-1",
-      sessionKey: "agent:main:main",
-      runId: "run-route-reused",
-    });
+  it("preserves exec-finished dedupe state when a routed retry reuses the same runId", async () => {
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused",
+        now: Date.now(),
+      }),
+    ).toBe("enqueue");
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -1869,7 +2098,7 @@ describe("node.invoke APNs wake path", () => {
         runId: "run-route-reused",
         now: Date.now(),
       }),
-    ).toBe("enqueue");
+    ).toBe("replay");
   });
 
   it("queues a routed success fallback when replying with a routed success throws", async () => {
@@ -2085,7 +2314,7 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
-  it("does not queue a quiet success fallback when notifyOnExitEmptySuccess is disabled", async () => {
+  it("queues a quiet success fallback when the direct reply write fails", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
       threadId: undefined,
@@ -2105,33 +2334,42 @@ describe("node.invoke APNs wake path", () => {
       throw new Error("request socket closed");
     });
 
-    await expect(
-      nodeHandlers["node.invoke"]({
-        params: makeNodeInvokeParams({
-          command: "system.run",
-          params: {
-            command: ["echo", "hi"],
-            sessionKey: "synthetic-session",
-            runId: "run-route-success-reply-failed-no-route",
-          },
-        }),
-        respond: respond as never,
-        context: {
-          nodeRegistry,
-          execApprovalManager: undefined,
-          logGateway: {
-            info: vi.fn(),
-            warn: vi.fn(),
-          },
-        } as never,
-        client: null,
-        req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
-        isWebchatConnect: () => false,
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "synthetic-session",
+          runId: "run-route-success-reply-failed-no-route",
+        },
       }),
-    ).rejects.toThrow("request socket closed");
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
 
-    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+    expect(runtimeMocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      "Exec finished (node=ios-node-1 id=run-route-success-reply-failed-no-route, code 0)",
+      {
+        sessionKey: "agent:main:synthetic-session",
+        contextKey: "exec:run-route-success-reply-failed-no-route",
+        deliveryContext: undefined,
+        trusted: false,
+      },
+    );
+    expect(runtimeMocks.requestHeartbeatNow).toHaveBeenCalledWith({
+      sessionKey: "agent:main:synthetic-session",
+      reason: "exec-event",
+    });
   });
 
   it("queues a quiet success fallback when deferred delivery already failed", async () => {
@@ -2202,7 +2440,7 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
-  it("treats success-only payloads as quiet successes when notifyOnExitEmptySuccess is disabled", async () => {
+  it("queues a minimal fallback for success-only payloads when the direct reply write fails", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
       threadId: undefined,
@@ -2222,33 +2460,42 @@ describe("node.invoke APNs wake path", () => {
       throw new Error("request socket closed");
     });
 
-    await expect(
-      nodeHandlers["node.invoke"]({
-        params: makeNodeInvokeParams({
-          command: "system.run",
-          params: {
-            command: ["echo", "hi"],
-            sessionKey: "synthetic-session",
-            runId: "run-route-success-only-reply-failed-no-route",
-          },
-        }),
-        respond: respond as never,
-        context: {
-          nodeRegistry,
-          execApprovalManager: undefined,
-          logGateway: {
-            info: vi.fn(),
-            warn: vi.fn(),
-          },
-        } as never,
-        client: null,
-        req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
-        isWebchatConnect: () => false,
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "synthetic-session",
+          runId: "run-route-success-only-reply-failed-no-route",
+        },
       }),
-    ).rejects.toThrow("request socket closed");
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
 
-    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+    expect(runtimeMocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      "Exec finished (node=ios-node-1 id=run-route-success-only-reply-failed-no-route, code ?)",
+      {
+        sessionKey: "agent:main:synthetic-session",
+        contextKey: "exec:run-route-success-only-reply-failed-no-route",
+        deliveryContext: undefined,
+        trusted: false,
+      },
+    );
+    expect(runtimeMocks.requestHeartbeatNow).toHaveBeenCalledWith({
+      sessionKey: "agent:main:synthetic-session",
+      reason: "exec-event",
+    });
   });
 
   it("compacts and sanitizes queued success fallback output when the reply write fails", async () => {
@@ -2371,7 +2618,7 @@ describe("node.invoke APNs wake path", () => {
     expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
   });
 
-  it("does not queue a success fallback when notifyOnExit is disabled in config", async () => {
+  it("forces a success fallback when the direct reply write fails even if notifyOnExit is disabled", async () => {
     mocks.loadConfig.mockReturnValue({
       tools: { exec: { notifyOnExit: false } },
     });
@@ -2390,39 +2637,53 @@ describe("node.invoke APNs wake path", () => {
       throw new Error("request socket closed");
     });
 
-    await expect(
-      nodeHandlers["node.invoke"]({
-        params: makeNodeInvokeParams({
-          command: "system.run",
-          params: {
-            command: ["echo", "hi"],
-            sessionKey: "main",
-            runId: "run-route-success-reply-failed-config-suppressed",
-            deliveryContext: {
-              channel: "telegram",
-              to: "-100123",
-              accountId: "primary",
-              threadId: 47,
-            },
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-success-reply-failed-config-suppressed",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
           },
-        }),
-        respond: respond as never,
-        context: {
-          nodeRegistry,
-          execApprovalManager: undefined,
-          logGateway: {
-            info: vi.fn(),
-            warn: vi.fn(),
-          },
-        } as never,
-        client: null,
-        req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
-        isWebchatConnect: () => false,
+        },
       }),
-    ).rejects.toThrow("request socket closed");
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
 
-    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+    expect(runtimeMocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      "Exec finished (node=ios-node-1 id=run-route-success-reply-failed-config-suppressed, code 0)\nok",
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-route-success-reply-failed-config-suppressed",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          accountId: "primary",
+          threadId: 47,
+        },
+        trusted: false,
+      },
+    );
+    expect(runtimeMocks.requestHeartbeatNow).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      reason: "exec-event",
+    });
   });
 
   it("skips synthetic success fallback when exec.finished already queued", async () => {
@@ -2829,11 +3090,94 @@ describe("node.invoke APNs wake path", () => {
     ).toBe("pre-delivered");
   });
 
-  it("clears older dedupe markers when a reused run is dispatched again", async () => {
+  it("preserves cached routes when a same-route retry reuses a pending run id", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "ios-node-1",
+      sessionKey: "agent:main:main",
+      runId: "run-route-reused-pending-same-route",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
+    });
+
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    const respond = await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-reused-pending-same-route",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: 47,
+          },
+        },
+      },
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: ErrorCodes.UNAVAILABLE,
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused-pending-same-route",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
+    expect(
+      classifyDuplicateExecFinished({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused-pending-same-route",
+        now: Date.now(),
+      }),
+    ).toBe("enqueue");
+  });
+
+  it("invalidates cached routes and preserves pre-delivered dedupe markers when a reused run is dispatched again", async () => {
     markExecFinishedDelivered({
       nodeId: "ios-node-1",
       sessionKey: "agent:main:main",
       runId: "run-route-reused-pending",
+    });
+    rememberNodeExecDeliveryContext({
+      nodeId: "ios-node-1",
+      sessionKey: "agent:main:main",
+      runId: "run-route-reused-pending",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        accountId: "primary",
+        threadId: 47,
+      },
     });
 
     const nodeRegistry = {
@@ -2874,13 +3218,20 @@ describe("node.invoke APNs wake path", () => {
       }),
     );
     expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:main:main",
+        runId: "run-route-reused-pending",
+      }),
+    ).toBeUndefined();
+    expect(
       classifyDuplicateExecFinished({
         nodeId: "ios-node-1",
         sessionKey: "agent:main:main",
         runId: "run-route-reused-pending",
         now: Date.now(),
       }),
-    ).toBe("enqueue");
+    ).toBe("pre-delivered");
   });
 
   it("keeps node exec delivery routes available beyond one hour", () => {

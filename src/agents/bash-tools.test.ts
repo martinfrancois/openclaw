@@ -882,6 +882,24 @@ describe("exec tool backgrounding", () => {
     expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
   });
 
+  it.skipIf(isWin)("allows waiting on captured background pid arrays expanded with *", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "pids=(); sleep 0.004 & pids+=($!); sleep 0.004 & pids+=($!); wait ${pids[*]}",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)("allows waiting after rebuilding captured background pid arrays", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      "pids=(); sleep 0.004 & pids=(${pids[@]} $!); sleep 0.004 & pids=(${pids[@]} $!); wait ${pids[@]}",
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
   it.skipIf(isWin)(
     "does not treat arbitrary wait variable operands as joined background jobs",
     async () => {
@@ -984,6 +1002,27 @@ describe("exec tool backgrounding", () => {
     expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
     expect(readNormalizedTextContent(result.content)).toContain("done");
   });
+
+  it.skipIf(isWin)("allows for-loop waits to join jobs started before the loop body", async () => {
+    const result = await executeExecCommand(
+      execTool,
+      'sleep 0.004 & pid=$!; for pid in "$pid"; do wait "$pid"; done',
+    );
+
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
+  it.skipIf(isWin)(
+    "allows EXIT-trap waits to join background jobs before the shell exits",
+    async () => {
+      const result = await executeExecCommand(
+        execTool,
+        "trap 'wait \"$pid\"' EXIT; sleep 0.004 & pid=$!",
+      );
+
+      expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+    },
+  );
 
   it.skipIf(isWin)("does not treat short-circuit waits as joining detached jobs", async () => {
     await expect(executeExecCommand(execTool, "sleep 0.004 & false && wait")).rejects.toThrow(

@@ -4,6 +4,7 @@ import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { sanitizeInboundSystemTags } from "../../auto-reply/reply/inbound-text.js";
 import { loadConfig } from "../../config/config.js";
 import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
+import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { listDevicePairing } from "../../infra/device-pairing.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -28,6 +29,7 @@ import {
   resolveApnsAuthConfigFromEnv,
   resolveApnsRelayConfigFromEnv,
 } from "../../infra/push-apns.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -45,7 +47,7 @@ import {
 import { createKnownNodeCatalog, getKnownNode, listKnownNodes } from "../node-catalog.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import {
-  clearRecentExecFinishedForRun,
+  hasPreDeliveredExecFinishedForRun,
   hasRecentExecFinishedForRun,
   markExecFinishedDelivered,
 } from "../node-exec-finished-dedupe.js";
@@ -66,7 +68,7 @@ import {
   validateNodePairVerifyParams,
   validateNodeRenameParams,
 } from "../protocol/index.js";
-import { canonicalizeSessionKeyForAgent, resolveSessionStoreKey } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { handleNodeInvokeResult } from "./nodes.handlers.invoke-result.js";
 import {
   respondInvalidParams,
@@ -155,10 +157,30 @@ function isForbiddenBrowserProxyMutation(params: unknown): boolean {
   return Boolean(method && path && isPersistentBrowserProxyMutation(method, path));
 }
 
+function scopeRelativeSessionKeyForAgentPreservingCase(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  agentId: string;
+  sessionKey: string;
+}): string {
+  const raw = params.sessionKey.trim();
+  if (!raw || /^agent:/iu.test(raw)) {
+    return raw;
+  }
+  const lower = normalizeLowercaseStringOrEmpty(raw);
+  const configuredMainKey = normalizeLowercaseStringOrEmpty(params.cfg.session?.mainKey) || "main";
+  if (lower === "main" || lower === configuredMainKey) {
+    return resolveAgentMainSessionKey({ cfg: params.cfg, agentId: params.agentId });
+  }
+  return `agent:${normalizeAgentId(params.agentId)}:${raw}`;
+}
+
 function resolveForwardedSystemRunDeliveryContextRegistration(
   nodeId: string,
   command: string,
   forwardedParams: unknown,
+  options?: {
+    trustExplicitDeliveryContext?: boolean;
+  },
 ): {
   nodeId: string;
   sessionKey?: string;
@@ -179,17 +201,23 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
   const rawSessionKey = normalizeOptionalString(params.sessionKey);
   const rawAgentId = normalizeOptionalString(params.agentId);
   const cfg = loadConfig();
-  const sessionKey = rawSessionKey
+  const deliveryLookupSessionKey = rawSessionKey
+    ? rawAgentId && !rawSessionKey.toLowerCase().startsWith("agent:")
+      ? scopeRelativeSessionKeyForAgentPreservingCase({
+          cfg,
+          agentId: rawAgentId,
+          sessionKey: rawSessionKey,
+        })
+      : rawSessionKey
+    : undefined;
+  const sessionKey = deliveryLookupSessionKey
     ? resolveSessionStoreKey({
         cfg,
-        sessionKey:
-          rawAgentId && !rawSessionKey.toLowerCase().startsWith("agent:")
-            ? canonicalizeSessionKeyForAgent(rawAgentId, rawSessionKey)
-            : rawSessionKey,
+        sessionKey: deliveryLookupSessionKey,
       })
     : undefined;
   const { deliveryContext: sessionDeliveryContext, threadId: sessionThreadId } =
-    extractDeliveryInfo(sessionKey);
+    extractDeliveryInfo(deliveryLookupSessionKey ?? sessionKey);
   const trustedSessionDeliveryContext = normalizeDeliveryContext(
     sessionDeliveryContext
       ? {
@@ -265,6 +293,13 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
   const comparableTrustedRoute = normalizeComparableDeliveryRoute(trustedSessionDeliveryContext);
   const explicitComparableThreadId = normalizeComparableThreadId(explicitDeliveryContext);
   const trustedComparableThreadId = normalizeComparableThreadId(trustedSessionDeliveryContext);
+  const explicitTargetsTelegramRootChatWithoutThread = (() => {
+    const normalized = normalizeDeliveryContext(explicitDeliveryContext);
+    if (normalized?.channel !== "telegram" || normalized.threadId != null) {
+      return false;
+    }
+    return !/^(?:telegram|tg):.+?:(?:topic|thread):[^:]+$/iu.test(normalized.to ?? "");
+  })();
   const sameComparableRoute =
     comparableExplicitRoute &&
     comparableTrustedRoute &&
@@ -276,11 +311,13 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
       : !explicitDeliveryContext
         ? trustedSessionDeliveryContext
         : trustedSessionDeliveryContext && sameComparableRoute
-          ? trustedComparableThreadId == null ||
+          ? (!explicitTargetsTelegramRootChatWithoutThread && explicitComparableThreadId == null) ||
+            trustedComparableThreadId == null ||
             trustedComparableThreadId === explicitComparableThreadId
             ? {
                 ...trustedSessionDeliveryContext,
-                ...(!trustedSessionDeliveryContext.accountId && explicitDeliveryContext?.accountId
+                ...(explicitDeliveryContext?.accountId &&
+                (options?.trustExplicitDeliveryContext || !trustedSessionDeliveryContext.accountId)
                   ? { accountId: explicitDeliveryContext.accountId }
                   : {}),
                 ...(explicitDeliveryContext?.threadId != null
@@ -290,7 +327,8 @@ function resolveForwardedSystemRunDeliveryContextRegistration(
             : explicitDeliveryContext?.channel && explicitDeliveryContext.to
               ? {
                   ...explicitDeliveryContext,
-                  ...(trustedSessionDeliveryContext.accountId
+                  ...(trustedSessionDeliveryContext.accountId &&
+                  !options?.trustExplicitDeliveryContext
                     ? { accountId: trustedSessionDeliveryContext.accountId }
                     : {}),
                 }
@@ -336,7 +374,11 @@ function ensureForwardedSystemRunSessionKey(command: string, forwardedParams: un
     sessionKey: rawAgentId
       ? resolveSessionStoreKey({
           cfg,
-          sessionKey: canonicalizeSessionKeyForAgent(rawAgentId, "node"),
+          sessionKey: scopeRelativeSessionKeyForAgentPreservingCase({
+            cfg,
+            agentId: rawAgentId,
+            sessionKey: "node",
+          }),
         })
       : "node",
   };
@@ -380,6 +422,7 @@ function restoreForwardedSystemRunDeliveryContext(params: {
 function buildSystemRunSuccessFallbackText(params: {
   nodeId: string;
   notifyOnExitEmptySuccess: boolean;
+  forceNotify: boolean;
   runId: string;
   payload?: unknown;
   payloadJSON?: string | null;
@@ -423,6 +466,7 @@ function buildSystemRunSuccessFallbackText(params: {
   if (
     !output &&
     successfulExit &&
+    !params.forceNotify &&
     !params.notifyOnExitEmptySuccess &&
     parsed.notifyDeliveryFailed !== true
   ) {
@@ -438,6 +482,7 @@ function applyTrustedSystemRunDeliveryContext(params: {
   nodeId: string;
   command: string;
   forwardedParams: unknown;
+  trustExplicitDeliveryContext?: boolean;
 }): unknown {
   if (
     params.command !== "system.run" ||
@@ -454,6 +499,7 @@ function applyTrustedSystemRunDeliveryContext(params: {
     params.nodeId,
     params.command,
     params.forwardedParams,
+    { trustExplicitDeliveryContext: params.trustExplicitDeliveryContext },
   );
   if (!registration?.deliveryContext) {
     return "deliveryContext" in (params.forwardedParams as Record<string, unknown>)
@@ -470,11 +516,15 @@ function rememberForwardedSystemRunDeliveryContext(
   nodeId: string,
   command: string,
   forwardedParams: unknown,
+  options?: {
+    trustExplicitDeliveryContext?: boolean;
+  },
 ): void {
   const registration = resolveForwardedSystemRunDeliveryContextRegistration(
     nodeId,
     command,
     forwardedParams,
+    options,
   );
   if (!registration) {
     return;
@@ -484,6 +534,14 @@ function rememberForwardedSystemRunDeliveryContext(
     return;
   }
   const existingDeliveryContext = resolveNodeExecDeliveryContext(registration);
+  const hasPreDeliveredExecFinished =
+    registration.sessionKey && registration.runId
+      ? hasPreDeliveredExecFinishedForRun({
+          nodeId,
+          sessionKey: registration.sessionKey,
+          runId: registration.runId,
+        })
+      : false;
   if (
     existingDeliveryContext &&
     deliveryContextKey(existingDeliveryContext) !== deliveryContextKey(registration.deliveryContext)
@@ -493,8 +551,11 @@ function rememberForwardedSystemRunDeliveryContext(
     forgetNodeExecDeliveryContext(registration);
     return;
   }
-  if (registration.sessionKey && registration.runId) {
-    clearRecentExecFinishedForRun(nodeId, registration.sessionKey, registration.runId);
+  if (hasPreDeliveredExecFinished) {
+    // A synthetic fallback already covered this runId, so keep the dedupe marker
+    // and avoid re-registering a route that a delayed real completion could steal.
+    forgetNodeExecDeliveryContext(registration);
+    return;
   }
   rememberNodeExecDeliveryContext(registration);
 }
@@ -503,11 +564,15 @@ function forgetForwardedSystemRunDeliveryContext(
   nodeId: string,
   command: string,
   forwardedParams: unknown,
+  options?: {
+    trustExplicitDeliveryContext?: boolean;
+  },
 ): void {
   const registration = resolveForwardedSystemRunDeliveryContextRegistration(
     nodeId,
     command,
     forwardedParams,
+    options,
   );
   if (!registration) {
     return;
@@ -1452,17 +1517,22 @@ export const nodeHandlers: GatewayRequestHandlers = {
           preserveExplicitDeliveryContext: client?.connect?.client?.mode === "backend",
         }),
       };
+      const trustExplicitDeliveryContext = client?.connect?.client?.mode === "backend";
       const routeRegistration = resolveForwardedSystemRunDeliveryContextRegistration(
         nodeId,
         command,
         forwardedParams.params,
+        { trustExplicitDeliveryContext },
       );
       const invokeForwardedParams = applyTrustedSystemRunDeliveryContext({
         nodeId,
         command,
         forwardedParams: forwardedParams.params,
+        trustExplicitDeliveryContext,
       });
-      rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+      rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params, {
+        trustExplicitDeliveryContext,
+      });
       const res = await context.nodeRegistry.invoke({
         nodeId,
         command,
@@ -1478,7 +1548,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
             error: res.error,
           })
         ) {
-          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params, {
+            trustExplicitDeliveryContext,
+          });
           const paramsJSON = toPendingParamsJSON(forwardedParams.params);
           const queued = enqueuePendingNodeAction({
             nodeId,
@@ -1519,9 +1591,13 @@ export const nodeHandlers: GatewayRequestHandlers = {
           return;
         }
         if (shouldKeepForwardedSystemRunDeliveryContextOnError(res.error)) {
-          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+          rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params, {
+            trustExplicitDeliveryContext,
+          });
         } else {
-          forgetForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+          forgetForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params, {
+            trustExplicitDeliveryContext,
+          });
         }
         if (!respondUnavailableOnNodeInvokeError(respond, res)) {
           return;
@@ -1551,9 +1627,6 @@ export const nodeHandlers: GatewayRequestHandlers = {
       } catch (error) {
         if (routedSuccessRun && routeRegistration?.suppressNotifyOnExit !== true) {
           const notifySettings = resolveExecNotifySettings(routedSuccessRun.sessionKey);
-          if (!notifySettings.notifyOnExit) {
-            throw error;
-          }
           if (
             hasRecentExecFinishedForRun({
               nodeId,
@@ -1568,6 +1641,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
           }
           const fallbackText = buildSystemRunSuccessFallbackText({
             nodeId,
+            forceNotify: true,
             notifyOnExitEmptySuccess: notifySettings.notifyOnExitEmptySuccess,
             runId: routedSuccessRun.runId,
             payload: res.payload,

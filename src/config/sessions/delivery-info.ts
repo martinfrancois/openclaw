@@ -34,17 +34,40 @@ export function extractDeliveryInfo(sessionKey: string | undefined): {
   try {
     const cfg = loadConfig();
     const parsedAgentSession = parseAgentSessionKey(baseSessionKey);
-    const storePath = resolveStorePath(cfg.session?.store, {
-      agentId: parsedAgentSession?.agentId,
-    });
-    const store = loadSessionStore(storePath);
-    let entry = store[sessionKey];
-    let storedDeliveryContext = deliveryContextFromSession(entry);
-    if (!hasRoutableDeliveryContext(storedDeliveryContext) && baseSessionKey !== sessionKey) {
-      entry = store[baseSessionKey];
-      storedDeliveryContext = deliveryContextFromSession(entry);
+    const candidateStorePaths = [
+      resolveStorePath(cfg.session?.store, {
+        agentId: parsedAgentSession?.agentId,
+      }),
+      resolveStorePath(cfg.session?.store),
+    ].filter((path, index, all) => all.indexOf(path) === index);
+    let storedDeliveryContext:
+      | {
+          channel: string;
+          to: string;
+          accountId?: string;
+          threadId?: string | number;
+        }
+      | undefined;
+    let freshestUpdatedAt = Number.NEGATIVE_INFINITY;
+    for (const storePath of candidateStorePaths) {
+      const store = loadSessionStore(storePath);
+      const candidateKeys =
+        baseSessionKey !== sessionKey ? [sessionKey, baseSessionKey] : [sessionKey];
+      for (const candidateKey of candidateKeys) {
+        const entry = store[candidateKey];
+        const candidateDeliveryContext = deliveryContextFromSession(entry);
+        if (!hasRoutableDeliveryContext(candidateDeliveryContext)) {
+          continue;
+        }
+        const updatedAt = entry?.updatedAt ?? 0;
+        if (!storedDeliveryContext || updatedAt >= freshestUpdatedAt) {
+          storedDeliveryContext = candidateDeliveryContext;
+          freshestUpdatedAt = updatedAt;
+        }
+        break;
+      }
     }
-    if (hasRoutableDeliveryContext(storedDeliveryContext)) {
+    if (storedDeliveryContext) {
       deliveryContext = {
         channel: storedDeliveryContext.channel,
         to: storedDeliveryContext.to,

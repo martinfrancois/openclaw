@@ -336,8 +336,95 @@ describe("executeNodeHostCommand", () => {
         deliveryContext?: unknown;
       };
     };
-    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
     expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
+    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a direct completion followup for silent async node successes when notifyOnExit is enabled", async () => {
+    callGatewayToolMock.mockImplementation(
+      async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
+        if (method !== "node.invoke") {
+          throw new Error(`unexpected gateway method: ${method}`);
+        }
+        if (params?.command === "system.run.prepare") {
+          return { payload: { plan: preparedPlan } };
+        }
+        if (params?.command === "system.run") {
+          return {
+            payload: {
+              success: true,
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+            },
+          };
+        }
+        throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+      },
+    );
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+    });
+
+    await vi.waitFor(() => {
+      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+        { approvalId: "approval-1" },
+        "Exec finished (node=node-1 id=approval-1, code 0)",
+      );
+    });
+  });
+
+  it("does not send a direct completion followup when empty-success notify is enabled", async () => {
+    callGatewayToolMock.mockImplementation(
+      async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
+        if (method !== "node.invoke") {
+          throw new Error(`unexpected gateway method: ${method}`);
+        }
+        if (params?.command === "system.run.prepare") {
+          return { payload: { plan: preparedPlan } };
+        }
+        if (params?.command === "system.run") {
+          return {
+            payload: {
+              success: true,
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+            },
+          };
+        }
+        throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+      },
+    );
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      notifyOnExitEmptySuccess: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
     expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
   });
 
@@ -468,7 +555,7 @@ describe("executeNodeHostCommand", () => {
         deliveryContext?: unknown;
       };
     };
-    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
     expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 
@@ -723,6 +810,46 @@ describe("executeNodeHostCommand", () => {
       params?: { suppressNotifyOnExit?: boolean };
     };
     expect(invokeParams.params?.suppressNotifyOnExit).toBe(true);
+  });
+
+  it("leaves post-approval system.run denials to exec.denied when notifyOnExit is enabled", async () => {
+    callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
+      if (method !== "node.invoke") {
+        throw new Error(`unexpected gateway method: ${method}`);
+      }
+      if (params?.command === "system.run.prepare") {
+        return { payload: { plan: preparedPlan } };
+      }
+      if (params?.command === "system.run") {
+        throw createSystemRunDeniedError("approval cwd changed before execution");
+      }
+      throw new Error(`unexpected node invoke command: ${String(params?.command)}`);
+    });
+
+    await executeNodeHostCommand({
+      command: "bun ./script.ts",
+      workdir: "/tmp/work",
+      env: {},
+      security: "full",
+      ask: "off",
+      defaultTimeoutSec: 30,
+      approvalRunningNoticeMs: 0,
+      warnings: [],
+      sessionKey: "requested-session",
+      turnSourceChannel: "telegram",
+      turnSourceTo: "-100123",
+      turnSourceAccountId: "primary",
+      turnSourceThreadId: 47,
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
+    });
+    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+    const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
   });
 
   it("preserves specific post-approval deny reasons for async node invokes", async () => {

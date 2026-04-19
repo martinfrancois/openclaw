@@ -572,6 +572,7 @@ export async function handleInvoke(
         deliveryContext,
         commandText,
         result,
+        notifyDeliveryFailed,
         suppressNotifyOnExit,
       }) => {
         await sendExecFinishedEvent({
@@ -581,6 +582,7 @@ export async function handleInvoke(
           deliveryContext,
           commandText,
           result,
+          notifyDeliveryFailed,
           suppressNotifyOnExit,
         });
       },

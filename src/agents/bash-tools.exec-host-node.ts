@@ -58,6 +58,7 @@ export type ExecuteNodeHostCommandParams = {
   warnings: string[];
   notifySessionKey?: string;
   notifyOnExit?: boolean;
+  notifyOnExitEmptySuccess?: boolean;
   trustedSafeBinDirs?: ReadonlySet<string>;
 };
 
@@ -212,7 +213,11 @@ function summarizeApprovedNodeInvokeResult(params: {
     : `Exec finished (node=${params.nodeId} id=${params.approvalId}, ${exitLabel})`;
 }
 
-function shouldSendApprovedNodeInvokeFollowup(raw: unknown, notifyOnExit: boolean): boolean {
+function shouldSendApprovedNodeInvokeFollowup(
+  raw: unknown,
+  notifyOnExit: boolean,
+  notifyOnExitEmptySuccess: boolean,
+): boolean {
   if (!notifyOnExit) {
     return true;
   }
@@ -220,7 +225,16 @@ function shouldSendApprovedNodeInvokeFollowup(raw: unknown, notifyOnExit: boolea
     raw && typeof raw === "object" ? (raw as { payload?: unknown }).payload : undefined;
   const payloadObj =
     payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-  return payloadObj.notifyDeliveryFailed === true;
+  if (payloadObj.notifyDeliveryFailed === true) {
+    return true;
+  }
+  const timedOut = payloadObj.timedOut === true;
+  const exitCode = typeof payloadObj.exitCode === "number" ? payloadObj.exitCode : undefined;
+  const successfulExit = payloadObj.success === true || (!timedOut && exitCode === 0);
+  const hasOutput = [payloadObj.stdout, payloadObj.stderr, payloadObj.error].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+  return successfulExit && !hasOutput && !notifyOnExitEmptySuccess;
 }
 
 export async function executeNodeHostCommand(
@@ -372,6 +386,7 @@ export async function executeNodeHostCommand(
       5_000,
   );
   const notifyOnExit = params.notifyOnExit !== false;
+  const notifyOnExitEmptySuccess = params.notifyOnExitEmptySuccess === true;
   const notifyDeliveryContext = normalizeDeliveryContext({
     channel: params.turnSourceChannel,
     to: params.turnSourceTo,
@@ -561,7 +576,7 @@ export async function executeNodeHostCommand(
               suppressNotifyOnExit: !notifyOnExit,
             }),
           );
-          if (shouldSendApprovedNodeInvokeFollowup(raw, notifyOnExit)) {
+          if (shouldSendApprovedNodeInvokeFollowup(raw, notifyOnExit, notifyOnExitEmptySuccess)) {
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
               summarizeApprovedNodeInvokeResult({
@@ -586,6 +601,9 @@ export async function executeNodeHostCommand(
             return;
           }
           if (isTerminalApprovedNodeInvokeFailure(error)) {
+            if (notifyOnExit) {
+              return;
+            }
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
               `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
@@ -621,7 +639,7 @@ export async function executeNodeHostCommand(
     "node.invoke",
     { timeoutMs: invokeTimeoutMs },
     buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId, {
-      suppressNotifyOnExit: !notifyOnExit,
+      suppressNotifyOnExit: true,
     }),
   );
   const payload =

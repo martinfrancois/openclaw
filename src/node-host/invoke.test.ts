@@ -120,6 +120,7 @@ describe("handleInvoke", () => {
             exitCode: 0,
             error: null,
           },
+          notifyDeliveryFailed: true,
         });
         throw Object.assign(new Error("request socket closed"), {
           __systemRunInvokeReplyFallback: true,
@@ -148,6 +149,7 @@ describe("handleInvoke", () => {
         : "";
     expect(JSON.parse(payloadJSON)).toMatchObject({
       runId: "run-2",
+      notifyDeliveryFailed: true,
       deliveryContext: {
         channel: "telegram",
         to: "-100123",

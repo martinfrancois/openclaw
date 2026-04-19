@@ -622,10 +622,11 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
         sessionKey,
       });
       const runId = normalizeOptionalString(obj.runId) ?? "";
+      const forceNotifyOnDeliveryFailure = obj.notifyDeliveryFailed === true;
       if (
         evt.event !== "exec.started" &&
         runId &&
-        (!notifyOnExit || obj.suppressNotifyOnExit === true)
+        ((!notifyOnExit && !forceNotifyOnDeliveryFailure) || obj.suppressNotifyOnExit === true)
       ) {
         resolveNodeExecDeliveryContext({
           nodeId,
@@ -634,7 +635,7 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
           consume: true,
         });
       }
-      if (!notifyOnExit) {
+      if (!notifyOnExit && !forceNotifyOnDeliveryFailure) {
         return;
       }
       if (obj.suppressNotifyOnExit === true) {
@@ -674,6 +675,12 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
           (notifyOnExitEmptySuccess && successfulExit);
         if (!shouldNotify) {
           if (runId) {
+            resolveNodeExecDeliveryContext({
+              nodeId,
+              sessionKey,
+              runId,
+              consume: true,
+            });
             if (hasPreDeliveredExecFinishedForRun({ nodeId, sessionKey, runId })) {
               clearRecentExecFinishedForRun(nodeId, sessionKey, runId);
             }

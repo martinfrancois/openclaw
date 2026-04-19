@@ -27,11 +27,7 @@ import {
 } from "../infra/exec-approvals.js";
 import type { ExecHostResponse } from "../infra/exec-host.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
-import {
-  formatSystemRunAllowlistMissMessage,
-  handleSystemRunInvoke,
-  isSystemRunInvokeReplyFallbackError,
-} from "./invoke-system-run.js";
+import { formatSystemRunAllowlistMissMessage, handleSystemRunInvoke } from "./invoke-system-run.js";
 import type { HandleSystemRunInvokeOptions } from "./invoke-system-run.js";
 
 type MockedRunCommand = Mock<HandleSystemRunInvokeOptions["runCommand"]>;
@@ -688,13 +684,14 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendExecFinishedEvent).not.toHaveBeenCalled();
   });
 
-  it("does not tag invoke delivery failures as fallback-safe when notifyOnExit is disabled in config", async () => {
+  it("forces a deferred fallback when the invoke reply is lost, even if node-local config disables notifyOnExit", async () => {
     const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
       HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
     >(async () => undefined);
 
-    await expect(
-      runSystemInvoke({
+    let thrown: unknown;
+    try {
+      await runSystemInvoke({
         preferMacAppExecHost: false,
         deliveryContext: {
           channel: "telegram",
@@ -709,10 +706,19 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
           ({
             tools: { exec: { notifyOnExit: false } },
           }) as OpenClawConfig,
-      }),
-    ).rejects.toThrow("request socket closed");
+      });
+    } catch (error) {
+      thrown = error;
+    }
 
-    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(2);
+    expect(sendExecFinishedEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        notifyDeliveryFailed: true,
+      }),
+    );
   });
 
   it("forces a deferred fallback when a quiet successful invoke reply is lost", async () => {
@@ -747,7 +753,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error);
-    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(true);
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(2);
     expect(sendExecFinishedEvent).toHaveBeenNthCalledWith(
       2,
@@ -755,48 +760,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         notifyDeliveryFailed: true,
       }),
     );
-  });
-
-  it("honors agent-scoped notifyOnExit overrides for relative session keys", async () => {
-    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
-      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
-    >(async () => undefined);
-
-    let thrown: unknown;
-    try {
-      await runSystemInvoke({
-        preferMacAppExecHost: false,
-        agentId: "ops",
-        sessionKey: "main",
-        deliveryContext: {
-          channel: "telegram",
-          to: "-100123",
-          threadId: 47,
-        },
-        sendInvokeResult: async () => {
-          throw new Error("request socket closed");
-        },
-        sendExecFinishedEvent,
-        loadConfig: () =>
-          ({
-            tools: { exec: { notifyOnExit: true } },
-            agents: {
-              list: [
-                {
-                  id: "ops",
-                  tools: { exec: { notifyOnExit: false } },
-                },
-              ],
-            },
-          }) as OpenClawConfig,
-      });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
-    expect(isSystemRunInvokeReplyFallbackError(thrown)).toBe(false);
-    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
   });
 
   it("canonicalizes relative session keys with agentId before emitting deferred exec events", async () => {
@@ -814,6 +777,26 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expect(sendExecFinishedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "agent:ops:main",
+      }),
+    );
+  });
+
+  it("preserves relative session key casing with agentId before emitting deferred exec events", async () => {
+    const mixedCaseSessionKey = "matrix:channel:!MixedCase:example.org";
+    const { sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      agentId: "ops",
+      sessionKey: mixedCaseSessionKey,
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+
+    expect(sendExecFinishedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: `agent:ops:${mixedCaseSessionKey}`,
       }),
     );
   });

@@ -5,7 +5,10 @@ import {
   resolveNodeExecDeliveryContext,
   resetNodeExecDeliveryContextRegistryForTests,
 } from "../infra/node-exec-delivery-context.js";
-import { markExecFinishedDelivered } from "./node-exec-finished-dedupe.js";
+import {
+  markExecFinishedDelivered,
+  resetExecFinishedDeduplicationForTests,
+} from "./node-exec-finished-dedupe.js";
 import type { loadSessionEntry as loadSessionEntryType } from "./session-utils.js";
 
 const buildSessionLookup = (
@@ -181,6 +184,7 @@ function buildCtx(): NodeEventContext {
 describe("node exec events", () => {
   beforeEach(() => {
     resetNodeEventDeduplicationForTests();
+    resetExecFinishedDeduplicationForTests();
     resetNodeExecDeliveryContextRegistryForTests();
     enqueueSystemEventMock.mockClear();
     enqueueSystemEventMock.mockReturnValue(true);
@@ -393,6 +397,48 @@ describe("node exec events", () => {
         trusted: false,
       },
     );
+  });
+
+  it("drops pre-delivered exec.finished events after a gateway restart", async () => {
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered-restart",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    markExecFinishedDelivered({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-pre-delivered-restart",
+    });
+    resetNodeExecDeliveryContextRegistryForTests({ clearPersisted: false });
+    resetExecFinishedDeduplicationForTests({ clearPersisted: false });
+
+    const ctx = buildCtx();
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-restart",
+        exitCode: 0,
+        timedOut: false,
+        output: "done",
+      }),
+    });
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "node-2",
+        sessionKey: "agent:main:main",
+        runId: "run-pre-delivered-restart",
+      }),
+    ).toBeUndefined();
   });
 
   it("does not route from untrusted node-provided delivery metadata without a gateway record", async () => {
@@ -792,7 +838,54 @@ describe("node exec events", () => {
     });
   });
 
-  it("keeps cached exec routes for quiet exec.finished completions", async () => {
+  it("honors notifyDeliveryFailed even when notifyOnExit is disabled for the session", async () => {
+    resolveAgentConfigMock.mockReturnValue({
+      tools: { exec: { notifyOnExit: false } },
+    });
+    rememberNodeExecDeliveryContext({
+      nodeId: "node-2",
+      sessionKey: "agent:main:main",
+      runId: "run-notify-delivery-failed-config-disabled",
+      deliveryContext: {
+        channel: "telegram",
+        to: "-100123",
+        threadId: 47,
+      },
+    });
+    const ctx = buildCtx();
+
+    await handleNodeEvent(ctx, "node-2", {
+      event: "exec.finished",
+      payloadJSON: JSON.stringify({
+        sessionKey: "agent:main:main",
+        runId: "run-notify-delivery-failed-config-disabled",
+        exitCode: 0,
+        timedOut: false,
+        output: "   ",
+        notifyDeliveryFailed: true,
+      }),
+    });
+
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith(
+      "Exec finished (node=node-2 id=run-notify-delivery-failed-config-disabled, code 0)",
+      {
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sessionKey: "agent:main:main",
+        contextKey: "exec:run-notify-delivery-failed-config-disabled",
+        trusted: false,
+      },
+    );
+    expect(requestHeartbeatNowMock).toHaveBeenCalledWith({
+      reason: "exec-event",
+      sessionKey: "agent:main:main",
+    });
+  });
+
+  it("consumes cached exec routes for quiet exec.finished completions", async () => {
     rememberNodeExecDeliveryContext({
       nodeId: "node-2",
       sessionKey: "agent:main:main",
@@ -821,14 +914,10 @@ describe("node exec events", () => {
         sessionKey: "agent:main:main",
         runId: "run-quiet-consume",
       }),
-    ).toEqual({
-      channel: "telegram",
-      to: "-100123",
-      threadId: 47,
-    });
+    ).toBeUndefined();
   });
 
-  it("reuses the cached route when a quiet completion is replayed with notifyDeliveryFailed", async () => {
+  it("does not reuse a stale cached route when a quiet completion is replayed with notifyDeliveryFailed", async () => {
     rememberNodeExecDeliveryContext({
       nodeId: "node-2",
       sessionKey: "agent:main:main",
@@ -868,11 +957,7 @@ describe("node exec events", () => {
       {
         sessionKey: "agent:main:main",
         contextKey: "exec:run-quiet-replay",
-        deliveryContext: {
-          channel: "telegram",
-          to: "-100123",
-          threadId: 47,
-        },
+        deliveryContext: undefined,
         trusted: false,
       },
     );

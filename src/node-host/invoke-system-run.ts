@@ -1,9 +1,7 @@
 import crypto from "node:crypto";
-import { resolveAgentConfig } from "../agents/agent-scope-config.js";
-import { resolveSessionAgentId } from "../agents/agent-scope.js";
+import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayClient } from "../gateway/client.js";
-import { canonicalizeSessionKeyForAgent } from "../gateway/session-store-key.js";
 import {
   addDurableCommandApproval,
   hasDurableExecApproval,
@@ -35,7 +33,10 @@ import { normalizeSystemRunApprovalPlan } from "../infra/system-run-approval-bin
 import { resolveSystemRunCommandRequest } from "../infra/system-run-command.js";
 import { logWarn } from "../logger.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { normalizeOptionalString } from "../shared/string-coerce.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "../shared/string-coerce.js";
 import { normalizeDeliveryContext, type DeliveryContext } from "../utils/delivery-context.js";
 import { evaluateSystemRunPolicy, resolveExecApprovalDecision } from "./exec-policy.js";
 import {
@@ -173,6 +174,20 @@ function resolveAgentExecConfig(
   return entry?.tools?.exec;
 }
 
+function scopeRelativeSessionKeyForAgentPreservingCase(params: {
+  agentId: string;
+  sessionKey: string;
+}): string {
+  const raw = params.sessionKey.trim();
+  if (!raw || /^agent:/iu.test(raw)) {
+    return raw;
+  }
+  if (normalizeLowercaseStringOrEmpty(raw) === "main") {
+    return resolveAgentMainSessionKey({ agentId: params.agentId });
+  }
+  return `agent:${normalizeAgentId(params.agentId)}:${raw}`;
+}
+
 export type HandleSystemRunInvokeOptions = {
   client: GatewayClient;
   params: SystemRunParams;
@@ -207,49 +222,6 @@ async function loadSystemRunConfig(opts: HandleSystemRunInvokeOptions): Promise<
   }
   const { loadConfig } = await import("../config/config.js");
   return loadConfig();
-}
-
-async function resolveExecNotifyOnExitEnabled(params: {
-  agentId?: string;
-  loadConfig?: () => OpenClawConfig;
-  sessionKey: string;
-}): Promise<{ notifyOnExit: boolean; notifyOnExitEmptySuccess: boolean }> {
-  const cfg = params.loadConfig
-    ? params.loadConfig()
-    : (await import("../config/config.js")).loadConfig();
-  const canonicalSessionKey =
-    params.agentId && !params.sessionKey.toLowerCase().startsWith("agent:")
-      ? canonicalizeSessionKeyForAgent(params.agentId, params.sessionKey)
-      : params.sessionKey;
-  const globalExec = cfg.tools?.exec;
-  const sessionAgentId = resolveSessionAgentId({ sessionKey: canonicalSessionKey, config: cfg });
-  const agentExec = sessionAgentId
-    ? resolveAgentConfig(cfg, sessionAgentId)?.tools?.exec
-    : undefined;
-  return {
-    notifyOnExit: (agentExec?.notifyOnExit ?? globalExec?.notifyOnExit) !== false,
-    notifyOnExitEmptySuccess:
-      (agentExec?.notifyOnExitEmptySuccess ?? globalExec?.notifyOnExitEmptySuccess) === true,
-  };
-}
-
-function shouldEmitExecFinishedFollowUp(
-  result: ExecFinishedResult,
-  notifyOnExitEmptySuccess: boolean,
-): boolean {
-  const output = [result.stdout, result.stderr, result.error]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .join("\n")
-    .trim();
-  const timedOut = result.timedOut === true;
-  const exitCode =
-    typeof result.exitCode === "number" && Number.isFinite(result.exitCode)
-      ? result.exitCode
-      : undefined;
-  const successfulExit = result.success === true || (!timedOut && exitCode === 0);
-  return (
-    timedOut || exitCode !== 0 || output.length > 0 || (notifyOnExitEmptySuccess && successfulExit)
-  );
 }
 
 async function sendSystemRunDenied(
@@ -340,29 +312,19 @@ async function sendSystemRunCompleted(
     if (execution.suppressNotifyOnExit || execFinishedError) {
       throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
     }
-    const notifySettings = await resolveExecNotifyOnExitEnabled({
-      agentId: execution.agentId,
-      loadConfig: opts.loadConfig,
-      sessionKey: execution.sessionKey,
-    });
-    if (!notifySettings.notifyOnExit) {
+    try {
+      await opts.sendExecFinishedEvent({
+        ...execFinishedEvent,
+        deliveryContext: execution.deliveryContext,
+        notifyDeliveryFailed: true,
+      });
+    } catch (error) {
+      logWarn(
+        `system.run fallback exec.finished delivery failed (runId=${execution.runId}): ${String(
+          error instanceof Error ? error.message : error,
+        )}`,
+      );
       throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
-    }
-    if (!shouldEmitExecFinishedFollowUp(result, notifySettings.notifyOnExitEmptySuccess)) {
-      try {
-        await opts.sendExecFinishedEvent({
-          ...execFinishedEvent,
-          deliveryContext: execution.deliveryContext,
-          notifyDeliveryFailed: true,
-        });
-      } catch (error) {
-        logWarn(
-          `system.run fallback exec.finished delivery failed (runId=${execution.runId}): ${String(
-            error instanceof Error ? error.message : error,
-          )}`,
-        );
-        throw tagSystemRunInvokeReplyBestEffortError(invokeResultError);
-      }
     }
     throw tagSystemRunInvokeReplyFallbackError(invokeResultError);
   }
@@ -470,7 +432,7 @@ async function parseSystemRunPhase(
   const rawSessionKey = normalizeOptionalString(opts.params.sessionKey);
   const sessionKey =
     rawSessionKey && agentId && !rawSessionKey.toLowerCase().startsWith("agent:")
-      ? canonicalizeSessionKeyForAgent(normalizeAgentId(agentId), rawSessionKey)
+      ? scopeRelativeSessionKeyForAgentPreservingCase({ agentId, sessionKey: rawSessionKey })
       : (rawSessionKey ?? "node");
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const deliveryContext =

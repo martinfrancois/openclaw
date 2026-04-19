@@ -16,7 +16,10 @@ type RegisteredNodeExecDeliveryContext = {
 
 const NODE_EXEC_DELIVERY_CONTEXTS_KEY = Symbol.for("openclaw.nodeExecDeliveryContexts");
 const NODE_EXEC_DELIVERY_CONTEXTS_FILE = "node-exec-delivery-contexts.json";
-const NODE_EXEC_DELIVERY_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000;
+// Keep deferred routes only as long as exec.finished replay dedupe is relevant.
+// Successful direct replies should not pin an old route for hours after the user
+// follow-up window has passed.
+const NODE_EXEC_DELIVERY_CONTEXT_TTL_MS = 10 * 60 * 1000;
 
 const registeredNodeExecDeliveryContexts = resolveGlobalMap<
   string,

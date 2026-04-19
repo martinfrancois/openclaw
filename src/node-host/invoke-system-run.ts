@@ -262,6 +262,9 @@ async function sendSystemRunCompleted(
     );
   }
   if (invokeResultError) {
+    if (execution.suppressNotifyOnExit) {
+      throw invokeResultError;
+    }
     try {
       await opts.sendExecFinishedEvent({
         ...execFinishedEvent,

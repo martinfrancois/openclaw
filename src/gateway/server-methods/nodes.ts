@@ -1490,16 +1490,6 @@ export const nodeHandlers: GatewayRequestHandlers = {
           },
           undefined,
         );
-        if (routedSuccessRun) {
-          markExecFinishedDelivered({
-            nodeId,
-            sessionKey: routedSuccessRun.sessionKey,
-            runId: routedSuccessRun.runId,
-          });
-        }
-        if (routeRegistration?.deliveryContext) {
-          forgetNodeExecDeliveryContext(routeRegistration);
-        }
       } catch (error) {
         if (routedSuccessRun && routeRegistration?.suppressNotifyOnExit !== true) {
           const fallbackText = buildSystemRunSuccessFallbackText({

@@ -481,7 +481,7 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
-  it("does not keep cached delivery context for successful inline system.run responses", async () => {
+  it("keeps cached delivery context for successful inline system.run responses until follow-up delivery", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -509,10 +509,15 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-sync-success",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
+    });
   });
 
-  it("drops cached delivery context for successful routed system.run responses", async () => {
+  it("keeps cached delivery context for successful routed system.run responses until follow-up delivery", async () => {
     const nodeRegistry = {
       get: vi.fn(() => ({
         nodeId: "ios-node-1",
@@ -546,7 +551,12 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-sync-routed-success",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
+    });
   });
 
   it("preserves the originating thread when a deferred session thread has moved", async () => {
@@ -1238,7 +1248,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("uses an explicit route for the immediate reply when no trusted session route exists", async () => {
+  it("keeps an explicit route available until the follow-up is delivered when no trusted session route exists", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,
       threadId: undefined,
@@ -1276,7 +1286,12 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:synthetic-session",
         runId: "run-route-explicit-fallback",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("does not cache delivery context for suppressed system.run notifications", async () => {
@@ -1510,7 +1525,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBeUndefined();
   });
 
-  it("marks routed system.run completions after replying to the caller", async () => {
+  it("keeps routed system.run completions pending after replying to the caller", async () => {
     expect(
       classifyDuplicateExecFinished({
         nodeId: "ios-node-1",
@@ -1569,14 +1584,19 @@ describe("node.invoke APNs wake path", () => {
         runId: "run-route-success",
         now: Date.now(),
       }),
-    ).toBe("pre-delivered");
+    ).toBe("enqueue");
     expect(
       resolveNodeExecDeliveryContext({
         nodeId: "ios-node-1",
         sessionKey: "agent:main:main",
         runId: "run-route-success",
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      channel: "signal",
+      to: "+15551234567",
+      accountId: "trusted-account",
+      threadId: "99",
+    });
   });
 
   it("clears stale exec-finished dedupe state before reusing a routed runId", async () => {
@@ -2294,7 +2314,7 @@ describe("node.invoke APNs wake path", () => {
     ).toBe("enqueue");
   });
 
-  it("keeps node exec delivery routes available beyond one hour", () => {
+  it("expires stale node exec delivery routes after the replay window", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 
@@ -2310,7 +2330,7 @@ describe("node.invoke APNs wake path", () => {
       },
     });
 
-    vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+    vi.advanceTimersByTime(11 * 60 * 1000);
 
     expect(
       resolveNodeExecDeliveryContext({
@@ -2318,12 +2338,7 @@ describe("node.invoke APNs wake path", () => {
         sessionKey: "agent:main:main",
         runId: "run-route-long",
       }),
-    ).toEqual({
-      channel: "telegram",
-      to: "-100123",
-      accountId: "primary",
-      threadId: 47,
-    });
+    ).toBeUndefined();
   });
 
   it("does not evict older pending routes when newer runs are registered", () => {

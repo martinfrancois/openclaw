@@ -411,6 +411,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       accountId?: string;
       threadId?: string | number;
     };
+    suppressNotifyOnExit?: boolean;
     security?: "full" | "allowlist";
     ask?: "off" | "on-miss" | "always";
     approvalDecision?: "allow" | "allow-always" | "deny" | null;
@@ -471,6 +472,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         systemRunPlan: params.systemRunPlan,
         cwd: params.cwd,
         deliveryContext: params.deliveryContext,
+        suppressNotifyOnExit: params.suppressNotifyOnExit,
         approvalDecision: params.approvalDecision,
         approved: params.approved ?? false,
         sessionKey: "agent:main:main",
@@ -634,6 +636,30 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     ).rejects.toThrow("request socket closed");
 
     expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back to exec.finished when notifyOnExit is suppressed", async () => {
+    const sendExecFinishedEvent: MockedSendExecFinishedEvent = vi.fn<
+      HandleSystemRunInvokeOptions["sendExecFinishedEvent"]
+    >(async () => undefined);
+
+    await expect(
+      runSystemInvoke({
+        preferMacAppExecHost: false,
+        suppressNotifyOnExit: true,
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: 47,
+        },
+        sendInvokeResult: async () => {
+          throw new Error("request socket closed");
+        },
+        sendExecFinishedEvent,
+      }),
+    ).rejects.toThrow("request socket closed");
+
+    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
   });
 
   it("uses mac app exec host when explicitly preferred", async () => {

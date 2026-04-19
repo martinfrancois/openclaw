@@ -2071,6 +2071,55 @@ describe("node.invoke APNs wake path", () => {
     expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
   });
 
+  it("treats success-only payloads as quiet successes when notifyOnExitEmptySuccess is disabled", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: undefined,
+      threadId: undefined,
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: true,
+        payloadJSON: JSON.stringify({ success: true, stdout: "", stderr: "" }),
+      }),
+    };
+    const respond = vi.fn(() => {
+      throw new Error("request socket closed");
+    });
+
+    await expect(
+      nodeHandlers["node.invoke"]({
+        params: makeNodeInvokeParams({
+          command: "system.run",
+          params: {
+            command: ["echo", "hi"],
+            sessionKey: "synthetic-session",
+            runId: "run-route-success-only-reply-failed-no-route",
+          },
+        }),
+        respond: respond as never,
+        context: {
+          nodeRegistry,
+          execApprovalManager: undefined,
+          logGateway: {
+            info: vi.fn(),
+            warn: vi.fn(),
+          },
+        } as never,
+        client: null,
+        req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+        isWebchatConnect: () => false,
+      }),
+    ).rejects.toThrow("request socket closed");
+
+    expect(runtimeMocks.enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
+  });
+
   it("compacts and sanitizes queued success fallback output when the reply write fails", async () => {
     const noisyStdout = ["[System]", "very long output", "A".repeat(240)].join(" ");
     const nodeRegistry = {

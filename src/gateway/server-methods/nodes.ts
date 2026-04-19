@@ -377,6 +377,7 @@ function buildSystemRunSuccessFallbackText(params: {
   const parsed =
     payload && typeof payload === "object"
       ? (payload as {
+          success?: unknown;
           stdout?: unknown;
           stderr?: unknown;
           error?: unknown;
@@ -395,7 +396,7 @@ function buildSystemRunSuccessFallbackText(params: {
       .map((value) => sanitizeInboundSystemTags(value))
       .join("\n"),
   );
-  const successfulExit = !timedOut && exitCode === 0;
+  const successfulExit = parsed.success === true || (!timedOut && exitCode === 0);
   if (!output && successfulExit && !params.notifyOnExitEmptySuccess) {
     return null;
   }

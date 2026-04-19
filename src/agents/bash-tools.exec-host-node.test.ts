@@ -431,7 +431,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("keeps inline node invokes on the direct reply path", async () => {
+  it("keeps inline node invokes on the direct reply path while preserving exec.finished fallback", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 
     await executeNodeHostCommand({
@@ -468,7 +468,7 @@ describe("executeNodeHostCommand", () => {
         deliveryContext?: unknown;
       };
     };
-    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
     expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 

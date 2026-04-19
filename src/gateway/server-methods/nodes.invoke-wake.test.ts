@@ -2071,6 +2071,74 @@ describe("node.invoke APNs wake path", () => {
     expect(runtimeMocks.requestHeartbeatNow).not.toHaveBeenCalled();
   });
 
+  it("queues a quiet success fallback when deferred delivery already failed", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: undefined,
+      threadId: undefined,
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: true,
+        payloadJSON: JSON.stringify({
+          exitCode: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          notifyDeliveryFailed: true,
+        }),
+      }),
+    };
+    let firstReply = true;
+    const respond = vi.fn((ok: boolean) => {
+      if (ok && firstReply) {
+        firstReply = false;
+        throw new Error("request socket closed");
+      }
+    });
+
+    await nodeHandlers["node.invoke"]({
+      params: makeNodeInvokeParams({
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "synthetic-session",
+          runId: "run-route-success-reply-failed-deferred-delivery-failed",
+        },
+      }),
+      respond: respond as never,
+      context: {
+        nodeRegistry,
+        execApprovalManager: undefined,
+        logGateway: {
+          info: vi.fn(),
+          warn: vi.fn(),
+        },
+      } as never,
+      client: null,
+      req: { type: "req", id: "req-node-invoke", method: "node.invoke" },
+      isWebchatConnect: () => false,
+    });
+
+    expect(runtimeMocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      "Exec finished (node=ios-node-1 id=run-route-success-reply-failed-deferred-delivery-failed, code 0)",
+      {
+        sessionKey: "agent:main:synthetic-session",
+        contextKey: "exec:run-route-success-reply-failed-deferred-delivery-failed",
+        deliveryContext: undefined,
+        trusted: false,
+      },
+    );
+    expect(runtimeMocks.requestHeartbeatNow).toHaveBeenCalledWith({
+      sessionKey: "agent:main:synthetic-session",
+      reason: "exec-event",
+    });
+  });
+
   it("treats success-only payloads as quiet successes when notifyOnExitEmptySuccess is disabled", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: undefined,

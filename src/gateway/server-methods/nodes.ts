@@ -377,6 +377,7 @@ function buildSystemRunSuccessFallbackText(params: {
   const parsed =
     payload && typeof payload === "object"
       ? (payload as {
+          notifyDeliveryFailed?: unknown;
           success?: unknown;
           stdout?: unknown;
           stderr?: unknown;
@@ -397,7 +398,12 @@ function buildSystemRunSuccessFallbackText(params: {
       .join("\n"),
   );
   const successfulExit = parsed.success === true || (!timedOut && exitCode === 0);
-  if (!output && successfulExit && !params.notifyOnExitEmptySuccess) {
+  if (
+    !output &&
+    successfulExit &&
+    !params.notifyOnExitEmptySuccess &&
+    parsed.notifyDeliveryFailed !== true
+  ) {
     return null;
   }
   const exitLabel = timedOut ? "timeout" : `code ${exitCode ?? "?"}`;

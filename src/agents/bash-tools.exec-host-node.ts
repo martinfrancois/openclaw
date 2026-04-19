@@ -621,7 +621,7 @@ export async function executeNodeHostCommand(
     "node.invoke",
     { timeoutMs: invokeTimeoutMs },
     buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId, {
-      suppressNotifyOnExit: true,
+      suppressNotifyOnExit: !notifyOnExit,
     }),
   );
   const payload =

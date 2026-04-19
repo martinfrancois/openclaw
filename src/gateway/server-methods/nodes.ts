@@ -1430,19 +1430,14 @@ export const nodeHandlers: GatewayRequestHandlers = {
         command,
         forwardedParams: forwardedParams.params,
       });
-      let res;
-      try {
-        res = await context.nodeRegistry.invoke({
-          nodeId,
-          command,
-          params: invokeForwardedParams,
-          timeoutMs: p.timeoutMs,
-          idempotencyKey: p.idempotencyKey,
-        });
-      } catch (error) {
-        rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
-        throw error;
-      }
+      rememberForwardedSystemRunDeliveryContext(nodeId, command, forwardedParams.params);
+      const res = await context.nodeRegistry.invoke({
+        nodeId,
+        command,
+        params: invokeForwardedParams,
+        timeoutMs: p.timeoutMs,
+        idempotencyKey: p.idempotencyKey,
+      });
       if (!res.ok) {
         if (
           shouldQueueAsPendingForegroundAction({

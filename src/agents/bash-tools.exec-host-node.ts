@@ -546,36 +546,41 @@ export async function executeNodeHostCommand(
             "node.invoke",
             { timeoutMs: invokeTimeoutMs },
             buildInvokeParams(approvedByAsk, approvalDecision, approvalId, {
-              suppressNotifyOnExit: true,
+              includeDeliveryContext: notifyOnExit,
+              suppressNotifyOnExit: !notifyOnExit,
             }),
           );
-          await execHostShared.sendExecApprovalFollowupResult(
-            followupTarget,
-            summarizeApprovedNodeInvokeResult({
-              raw,
-              nodeId,
-              approvalId,
-            }),
-          );
+          if (!notifyOnExit) {
+            await execHostShared.sendExecApprovalFollowupResult(
+              followupTarget,
+              summarizeApprovedNodeInvokeResult({
+                raw,
+                nodeId,
+                approvalId,
+              }),
+            );
+          }
         } catch (error) {
           // Approval followups are authoritative for this path, so pending dispatch
-          // failures stop here instead of waiting for a later heartbeat completion.
+          // failures only suppress later delivery when notifyOnExit is disabled.
           const pendingGatewayTimeout = isPendingNodeInvokeTimeout(error);
           const pendingQueuedInvoke = isPendingQueuedNodeInvoke(error);
           if (pendingGatewayTimeout || pendingQueuedInvoke) {
             await execHostShared.sendExecApprovalFollowupResult(
               followupTarget,
               pendingQueuedInvoke
-                ? `Exec pending (node=${nodeId} id=${approvalId}, invoke-unconfirmed): ${params.command}\nThe gateway queued the run until the node returns to the foreground. No automatic completion follow-up will be sent for this approval flow.`
-                : `Exec pending (node=${nodeId} id=${approvalId}, gateway-timeout): ${params.command}\nThe gateway timed out before confirming dispatch. No automatic completion follow-up will be sent for this approval flow.`,
+                ? `Exec pending (node=${nodeId} id=${approvalId}, invoke-unconfirmed): ${params.command}\nThe gateway queued the run until the node returns to the foreground.${notifyOnExit ? "" : " No automatic completion follow-up will be sent for this approval flow."}`
+                : `Exec pending (node=${nodeId} id=${approvalId}, gateway-timeout): ${params.command}\nThe gateway timed out before confirming dispatch.${notifyOnExit ? "" : " No automatic completion follow-up will be sent for this approval flow."}`,
             );
             return;
           }
           if (isTerminalApprovedNodeInvokeFailure(error)) {
-            await execHostShared.sendExecApprovalFollowupResult(
-              followupTarget,
-              `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
-            );
+            if (!notifyOnExit) {
+              await execHostShared.sendExecApprovalFollowupResult(
+                followupTarget,
+                `Exec denied (node=${nodeId} id=${approvalId}, ${summarizeTerminalApprovedNodeInvokeFailure(error)}): ${params.command}`,
+              );
+            }
             return;
           }
           await execHostShared.sendExecApprovalFollowupResult(

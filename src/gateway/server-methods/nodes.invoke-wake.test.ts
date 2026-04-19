@@ -1044,6 +1044,52 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
+  it("registers the deferred route before a successful node invoke can emit exec.finished", async () => {
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn(async () => {
+        expect(
+          resolveNodeExecDeliveryContext({
+            nodeId: "ios-node-1",
+            sessionKey: "agent:main:main",
+            runId: "run-route-success-before-reply",
+          }),
+        ).toEqual({
+          channel: "signal",
+          to: "+15551234567",
+          accountId: "trusted-account",
+          threadId: "99",
+        });
+        return {
+          ok: true,
+          payloadJSON: JSON.stringify({ exitCode: 0, timedOut: false, stdout: "ok", stderr: "" }),
+        };
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          sessionKey: "main",
+          runId: "run-route-success-before-reply",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100999",
+            accountId: "spoofed-account",
+            threadId: 47,
+          },
+        },
+      },
+    });
+  });
+
   it("ignores stripped deliveryContext overrides that change the base route", async () => {
     mocks.sanitizeNodeInvokeParamsForForwarding.mockImplementation(
       ({ rawParams }: { rawParams: unknown }) => {

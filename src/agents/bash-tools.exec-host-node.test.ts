@@ -331,16 +331,17 @@ describe("executeNodeHostCommand", () => {
       }),
     );
     const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
-      params?: { suppressNotifyOnExit?: boolean };
+      params?: {
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: unknown;
+      };
     };
-    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
-    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
-      { approvalId: "approval-1" },
-      "Exec finished (node=node-1 id=approval-1, code 0)\nok",
-    );
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
+    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
   });
 
-  it("sends a direct completion followup for silent async node successes", async () => {
+  it("sends a direct completion followup for silent async node successes when notifyOnExit is disabled", async () => {
     callGatewayToolMock.mockImplementation(
       async (method: string, _options: unknown, params: MockNodeInvokeParams | undefined) => {
         if (method !== "node.invoke") {
@@ -374,6 +375,7 @@ describe("executeNodeHostCommand", () => {
       approvalRunningNoticeMs: 0,
       warnings: [],
       sessionKey: "requested-session",
+      notifyOnExit: false,
     });
 
     await vi.waitFor(() => {
@@ -470,6 +472,10 @@ describe("executeNodeHostCommand", () => {
       { approvalId: "approval-1" },
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
     );
+    const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
   });
 
   it("reports a non-terminal timeout when the gateway forwards a node TIMEOUT error", async () => {
@@ -509,6 +515,10 @@ describe("executeNodeHostCommand", () => {
       { approvalId: "approval-1" },
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
     );
+    const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
   });
 
   it("keeps queued async node invokes pending until the deferred completion arrives", async () => {
@@ -548,9 +558,13 @@ describe("executeNodeHostCommand", () => {
       { approvalId: "approval-1" },
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, invoke-unconfirmed)"),
     );
+    const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { suppressNotifyOnExit?: boolean };
+    };
+    expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
   });
 
-  it("keeps explicit system.run denials terminal for async node invokes", async () => {
+  it("keeps explicit system.run denials on the normal notifyOnExit path", async () => {
     callGatewayToolMock.mockImplementation(async (method: string, _options: unknown, params) => {
       if (method !== "node.invoke") {
         throw new Error(`unexpected gateway method: ${method}`);
@@ -583,10 +597,7 @@ describe("executeNodeHostCommand", () => {
     await vi.waitFor(() => {
       expect(callGatewayToolMock).toHaveBeenCalledTimes(2);
     });
-    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
-      { approvalId: "approval-1" },
-      "Exec denied (node=node-1 id=approval-1, approval-required): bun ./script.ts",
-    );
+    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
   });
 
   it("reports explicit system.run denials directly when notifyOnExit is disabled", async () => {
@@ -656,6 +667,7 @@ describe("executeNodeHostCommand", () => {
       approvalRunningNoticeMs: 0,
       warnings: [],
       sessionKey: "requested-session",
+      notifyOnExit: false,
       turnSourceChannel: "telegram",
       turnSourceTo: "-100123",
       turnSourceAccountId: "primary",

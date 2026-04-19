@@ -386,7 +386,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("forwards the current turn delivery context for node invokes that may complete later", async () => {
+  it("keeps inline node invokes on the direct reply path", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 
     await executeNodeHostCommand({
@@ -419,20 +419,12 @@ describe("executeNodeHostCommand", () => {
     );
     const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
       params?: {
-        deliveryContext?: {
-          channel: string;
-          to: string;
-          accountId: string;
-          threadId: number;
-        };
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: unknown;
       };
     };
-    expect(asyncInvokeParams.params?.deliveryContext).toEqual({
-      channel: "telegram",
-      to: "-100123",
-      accountId: "primary",
-      threadId: 47,
-    });
+    expect(asyncInvokeParams.params?.suppressNotifyOnExit).toBe(true);
+    expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 
   it("reports a non-terminal timeout when the async node invoke times out", async () => {
@@ -473,9 +465,23 @@ describe("executeNodeHostCommand", () => {
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
     );
     const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
-      params?: { suppressNotifyOnExit?: boolean };
+      params?: {
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: {
+          channel: string;
+          to: string;
+          accountId: string;
+          threadId: number;
+        };
+      };
     };
     expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(invokeParams.params?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("reports a non-terminal timeout when the gateway forwards a node TIMEOUT error", async () => {
@@ -516,9 +522,23 @@ describe("executeNodeHostCommand", () => {
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, gateway-timeout)"),
     );
     const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
-      params?: { suppressNotifyOnExit?: boolean };
+      params?: {
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: {
+          channel: string;
+          to: string;
+          accountId: string;
+          threadId: number;
+        };
+      };
     };
     expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(invokeParams.params?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("keeps queued async node invokes pending until the deferred completion arrives", async () => {
@@ -559,9 +579,23 @@ describe("executeNodeHostCommand", () => {
       expect.stringContaining("Exec pending (node=node-1 id=approval-1, invoke-unconfirmed)"),
     );
     const invokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
-      params?: { suppressNotifyOnExit?: boolean };
+      params?: {
+        suppressNotifyOnExit?: boolean;
+        deliveryContext?: {
+          channel: string;
+          to: string;
+          accountId: string;
+          threadId: number;
+        };
+      };
     };
     expect(invokeParams.params?.suppressNotifyOnExit).toBeUndefined();
+    expect(invokeParams.params?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: 47,
+    });
   });
 
   it("keeps explicit system.run denials on the normal notifyOnExit path", async () => {
@@ -720,7 +754,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("does not forward delivery context when deferred completion followups are disabled", async () => {
+  it("keeps inline node invokes direct even when notifyOnExit is disabled", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 
     await executeNodeHostCommand({

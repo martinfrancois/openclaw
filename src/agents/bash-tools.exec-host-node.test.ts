@@ -384,7 +384,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("forwards the run delivery context only for async node follow-ups", async () => {
+  it("does not forward the run delivery context for async node invokes", async () => {
     await executeNodeHostCommand({
       command: "bun ./script.ts",
       workdir: "/tmp/work",
@@ -411,16 +411,12 @@ describe("executeNodeHostCommand", () => {
       expect.anything(),
       expect.objectContaining({
         command: "system.run",
-        params: expect.objectContaining({
-          deliveryContext: {
-            channel: "telegram",
-            to: "-100123",
-            accountId: "primary",
-            threadId: 47,
-          },
-        }),
       }),
     );
+    const asyncInvokeParams = callGatewayToolMock.mock.calls[1]?.[2] as {
+      params?: { deliveryContext?: unknown };
+    };
+    expect(asyncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 
   it("reports a non-terminal timeout when the async node invoke times out", async () => {
@@ -657,7 +653,7 @@ describe("executeNodeHostCommand", () => {
     });
   });
 
-  it("forwards delivery context for synchronous node execs", async () => {
+  it("keeps synchronous node execs inline without forwarding delivery context", async () => {
     requiresExecApprovalMock.mockReturnValue(false);
 
     await executeNodeHostCommand({
@@ -697,12 +693,7 @@ describe("executeNodeHostCommand", () => {
       };
     };
     expect(syncInvokeParams.params?.suppressNotifyOnExit).toBeUndefined();
-    expect(syncInvokeParams.params?.deliveryContext).toEqual({
-      channel: "telegram",
-      to: "-100123",
-      accountId: "primary",
-      threadId: 47,
-    });
+    expect(syncInvokeParams.params?.deliveryContext).toBeUndefined();
   });
 
   it("denies timed-out inline-eval requests instead of invoking the node", async () => {

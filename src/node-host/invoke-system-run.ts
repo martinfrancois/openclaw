@@ -247,8 +247,7 @@ async function sendSystemRunCompleted(
     result,
     suppressNotifyOnExit: execution.suppressNotifyOnExit,
   } as const;
-  const shouldEmitDeferredSuccess =
-    !execution.suppressNotifyOnExit && execution.deliveryContext !== undefined;
+  const shouldEmitDeferredSuccess = !execution.suppressNotifyOnExit;
   let execFinishedError: unknown = null;
   if (shouldEmitDeferredSuccess) {
     try {

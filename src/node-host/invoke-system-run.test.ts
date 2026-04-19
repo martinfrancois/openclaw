@@ -515,7 +515,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 
-  it("does not emit exec.finished after a successful local invoke reply", async () => {
+  it("keeps successful local exec.finished delivery best-effort before the invoke reply", async () => {
     const { sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
       preferMacAppExecHost: false,
       sendExecFinishedEvent: async () => {
@@ -524,7 +524,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     });
 
     expect(sendInvokeResult).toHaveBeenCalledTimes(1);
-    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
+    expect(sendExecFinishedEvent).toHaveBeenCalledTimes(1);
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 

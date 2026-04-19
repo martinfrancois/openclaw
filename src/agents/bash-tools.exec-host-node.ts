@@ -511,7 +511,6 @@ export async function executeNodeHostCommand(
             "node.invoke",
             { timeoutMs: invokeTimeoutMs },
             buildInvokeParams(approvedByAsk, approvalDecision, approvalId, {
-              includeDeliveryContext: notifyOnExit,
               suppressNotifyOnExit: !notifyOnExit,
             }),
           );
@@ -583,7 +582,6 @@ export async function executeNodeHostCommand(
     "node.invoke",
     { timeoutMs: invokeTimeoutMs },
     buildInvokeParams(inlineApprovedByAsk, inlineApprovalDecision, inlineApprovalId, {
-      includeDeliveryContext: notifyOnExit,
       suppressNotifyOnExit: !notifyOnExit,
     }),
   );

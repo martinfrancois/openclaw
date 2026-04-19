@@ -977,6 +977,69 @@ describe("node.invoke APNs wake path", () => {
     });
   });
 
+  it("normalizes missing backend system.run session keys before caching follow-up routes", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: undefined,
+      threadId: undefined,
+    });
+    const nodeRegistry = {
+      get: vi.fn(() => ({
+        nodeId: "ios-node-1",
+        commands: ["system.run"],
+        platform: process.platform,
+      })),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "TIMEOUT", message: "timed out" },
+      }),
+    };
+
+    await invokeNode({
+      nodeRegistry,
+      client: createBackendClient(),
+      requestParams: {
+        command: "system.run",
+        params: {
+          command: ["echo", "hi"],
+          agentId: "ops",
+          runId: "run-route-backend-missing-session-key",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        },
+      },
+    });
+
+    expect(nodeRegistry.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          sessionKey: "agent:ops:node",
+          deliveryContext: {
+            channel: "telegram",
+            to: "-100123",
+            accountId: "primary",
+            threadId: "topic-47",
+          },
+        }),
+      }),
+    );
+    expect(
+      resolveNodeExecDeliveryContext({
+        nodeId: "ios-node-1",
+        sessionKey: "agent:ops:node",
+        runId: "run-route-backend-missing-session-key",
+      }),
+    ).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      accountId: "primary",
+      threadId: "topic-47",
+    });
+  });
+
   it("prefers backend deliveryContext when the stored trusted route is stale", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: {

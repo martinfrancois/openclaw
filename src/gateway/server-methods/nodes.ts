@@ -320,6 +320,28 @@ function ensureForwardedSystemRunRunId(command: string, forwardedParams: unknown
   };
 }
 
+function ensureForwardedSystemRunSessionKey(command: string, forwardedParams: unknown): unknown {
+  if (command !== "system.run" || typeof forwardedParams !== "object" || forwardedParams === null) {
+    return forwardedParams;
+  }
+  const params = forwardedParams as Record<string, unknown>;
+  const sessionKey = normalizeOptionalString(params.sessionKey);
+  if (sessionKey) {
+    return forwardedParams;
+  }
+  const rawAgentId = normalizeOptionalString(params.agentId);
+  const cfg = loadConfig();
+  return {
+    ...params,
+    sessionKey: rawAgentId
+      ? resolveSessionStoreKey({
+          cfg,
+          sessionKey: canonicalizeSessionKeyForAgent(rawAgentId, "node"),
+        })
+      : "node",
+  };
+}
+
 function restoreForwardedSystemRunDeliveryContext(params: {
   command: string;
   sanitizedForwardedParams: unknown;
@@ -1400,7 +1422,10 @@ export const nodeHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const rawForwardedParams = ensureForwardedSystemRunRunId(command, p.params);
+      const rawForwardedParams = ensureForwardedSystemRunRunId(
+        command,
+        ensureForwardedSystemRunSessionKey(command, p.params),
+      );
       const sanitizedForwardedParams = sanitizeNodeInvokeParamsForForwarding({
         nodeId,
         command,

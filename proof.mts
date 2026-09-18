@@ -1,0 +1,24 @@
+import { execSync } from "node:child_process";
+import { createExecTool } from "../src/agents/bash-tools.exec-run.js";
+import { createProcessTool } from "../src/agents/bash-tools.process.js";
+import { waitForExecScope } from "../src/agents/bash-process-registry.js";
+
+const scopeKey = "agent:main:proof";
+console.log("head:", execSync("git rev-parse HEAD").toString().trim());
+console.log("node:", process.version);
+const exec = createExecTool({ host: "gateway", security: "full", ask: "off", allowBackground: true, notifyOnExit: false, timeoutSec: 10, scopeKey });
+const proc = createProcessTool({ scopeKey });
+const command = `'${process.execPath}' -e 'setTimeout(() => { process.stdout.write("WORK_STARTED\\n"); process.exit(7); }, 500)'`;
+const started = await exec.execute("proof-start", { command, background: true });
+const text = started.content[0]?.type === "text" ? started.content[0].text : "";
+console.log("exec:", text.replace(/session [^,]+/, "session <session-id>").replace(/pid \d+/, "pid <pid>"));
+if (started.details.status !== "running") throw new Error("expected running");
+const log = await proc.execute("proof-log", { action: "log", sessionId: started.details.sessionId });
+console.log("immediate-log:", log.content[0]?.type === "text" ? log.content[0].text : "");
+console.log("immediate-status:", log.details.status);
+await waitForExecScope(scopeKey);
+const done = await proc.execute("proof-poll", { action: "poll", sessionId: started.details.sessionId });
+console.log("terminal-output:\n" + (done.content[0]?.type === "text" ? done.content[0].text : ""));
+console.log("terminal-status:", done.details.status);
+console.log("terminal-exit-code:", done.details.exitCode);
+process.exit(0);
